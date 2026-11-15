@@ -463,5 +463,114 @@ namespace Fantasy.Timer
                 }
             }
         }
+
+        /// <summary>
+        /// 观察指定 ID 的计时器此刻的状态：ID、类型、开始时间、延迟时间、到期时间与回调名。
+        /// 交回的是一份值拷贝，不交出计时器表与回调本身。只能在所属Scene的线程上调用，写计时器表的也是这个线程。
+        /// </summary>
+        /// <param name="timerId">计时器的 ID。</param>
+        /// <param name="timer">这一刻的状态拷贝；没有这个计时器时为默认值。</param>
+        /// <returns>计时器是否存在。</returns>
+        public bool TryGetTimer(long timerId, out TimerObservation timer)
+        {
+            if (!_timerActions.TryGetValue(timerId, out var timerAction))
+            {
+                timer = default;
+                return false;
+            }
+
+            timer = ObserveTimer(timerAction);
+            return true;
+        }
+
+        /// <summary>
+        /// 观察当前全部计时器此刻的状态。每次调用交回一个新数组，改动它不会影响计时器表。
+        /// 只能在所属Scene的线程上调用，写计时器表的也是这个线程。
+        /// </summary>
+        /// <returns>这一刻全部计时器的状态拷贝。</returns>
+        public TimerObservation[] CopyTimers()
+        {
+            var timers = new TimerObservation[_timerActions.Count];
+            var index = 0;
+
+            foreach (var timerAction in _timerActions.Values)
+            {
+                timers[index++] = ObserveTimer(timerAction);
+            }
+
+            return timers;
+        }
+
+        private static TimerObservation ObserveTimer(TimerAction timerAction)
+        {
+            return new TimerObservation(
+                timerAction.TimerId,
+                timerAction.TimerType,
+                timerAction.StartTime,
+                timerAction.TriggerTime,
+                timerAction.StartTime + timerAction.TriggerTime,
+                CallbackName(timerAction.Callback));
+        }
+
+        // 委托为「声明类型完整名.方法名」；等待者为「wait:等待者类型名」。只在观察时取，不在创建计时器时取。
+        private static string CallbackName(object callback)
+        {
+            switch (callback)
+            {
+                case null:
+                {
+                    return string.Empty;
+                }
+                case Delegate action:
+                {
+                    return $"{action.Method.DeclaringType?.FullName}.{action.Method.Name}";
+                }
+                default:
+                {
+                    return $"wait:{callback.GetType().Name}";
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 计时器在某一刻的状态拷贝。只是值：读取之后计时器再变化，它不会跟着变；改动它也不会影响计时器。不含回调本身。
+    /// </summary>
+    public readonly struct TimerObservation
+    {
+        /// <summary>
+        /// 计时器的 ID
+        /// </summary>
+        public long TimerId { get; }
+        /// <summary>
+        /// 计时器类型
+        /// </summary>
+        public TimerType TimerType { get; }
+        /// <summary>
+        /// 开始时间（毫秒）
+        /// </summary>
+        public long StartTime { get; }
+        /// <summary>
+        /// 延迟时间（毫秒）；重复计时器为重复间隔
+        /// </summary>
+        public long TriggerTime { get; }
+        /// <summary>
+        /// 到期时间（毫秒），即开始时间加延迟时间
+        /// </summary>
+        public long TillTime { get; }
+        /// <summary>
+        /// 回调名：委托为「声明类型完整名.方法名」，等待者为「wait:等待者类型名」
+        /// </summary>
+        public string CallbackName { get; }
+
+        internal TimerObservation(long timerId, TimerType timerType, long startTime, long triggerTime, long tillTime, string callbackName)
+        {
+            TimerId = timerId;
+            TimerType = timerType;
+            StartTime = startTime;
+            TriggerTime = triggerTime;
+            TillTime = tillTime;
+            CallbackName = callbackName;
+        }
     }
 }
