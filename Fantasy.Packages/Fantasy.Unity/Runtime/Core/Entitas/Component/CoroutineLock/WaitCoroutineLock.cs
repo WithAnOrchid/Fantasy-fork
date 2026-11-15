@@ -74,6 +74,7 @@ namespace Fantasy.Async
         internal long TimerId { get; private set; }
         internal long CoroutineLockQueueKey { get; private set; }
         internal ICoroutineLock CoroutineLock { get; private set; }
+        internal int TimeOut => _timeOut;
 
         private bool _isSetResult;
         private bool _isAcquired;
