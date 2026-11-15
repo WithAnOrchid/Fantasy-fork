@@ -300,6 +300,9 @@ namespace Fantasy.Network.Interface
             // 到达时记下会话与目标的运行时编号，等待之后拿来重核
             var sessionRuntimeId = session.RuntimeId;
             var entityRuntimeId = entity.RuntimeId;
+            // 请求的答复类型也在到达时取好：等待中接收方根场景关掉会释放这个分发组件，答复类型表随之置空，
+            // 之后作答只用这里取好的类型
+            var responseType = message is IAddressRequest request ? RouteResponseType(request.OpCode()) : null;
             var outcome = AddressMessageOutcome.Faulted;
             // 到达时抛出的没有回答，结局里的标记为空
             var verdict = default(AddressMessageVerdict);
@@ -316,12 +319,12 @@ namespace Fantasy.Network.Interface
                 catch (Exception e)
                 {
                     // 拦截器到达时抛出，或等待的任务失败：释放报文，请求答 ErrRpcFail
-                    AnswerAddressMessage(session, rpcId, protocolCode, message, InnerErrorCode.ErrRpcFail);
+                    AnswerAddressMessage(session, rpcId, message, InnerErrorCode.ErrRpcFail, responseType);
                     Log.Error(e);
                     return;
                 }
 
-                if (!AddressMessageStillDeliverable(session, entity, rpcId, message, sessionRuntimeId, entityRuntimeId, !(entity is Scene)))
+                if (!AddressMessageStillDeliverable(session, entity, rpcId, message, sessionRuntimeId, entityRuntimeId, !(entity is Scene), responseType))
                 {
                     outcome = AddressMessageOutcome.Dropped;
                     return;
@@ -329,7 +332,7 @@ namespace Fantasy.Network.Interface
 
                 if (error != 0)
                 {
-                    AnswerAddressMessage(session, rpcId, protocolCode, message, error);
+                    AnswerAddressMessage(session, rpcId, message, error, responseType);
                     outcome = AddressMessageOutcome.Answered;
                     return;
                 }
@@ -345,8 +348,8 @@ namespace Fantasy.Network.Interface
         }
 
         // 与上面出锁后的核对一致：先核会话（只释放、不答），再核目标（释放，请求答 ErrEntityNotFound）。
-        // checkSession 为 false 时不核会话：发到 Scene 的报文。
-        private bool AddressMessageStillDeliverable(Session session, Entity entity, uint rpcId, object message, long sessionRuntimeId, long entityRuntimeId, bool checkSession)
+        // checkSession 为 false 时不核会话：发到 Scene 的报文。responseType 是到达时取好的答复类型，只有请求才有。
+        private static bool AddressMessageStillDeliverable(Session session, Entity entity, uint rpcId, object message, long sessionRuntimeId, long entityRuntimeId, bool checkSession, Type? responseType)
         {
             if (checkSession && sessionRuntimeId != session.RuntimeId)
             {
@@ -356,15 +359,11 @@ namespace Fantasy.Network.Interface
 
             if (entityRuntimeId != entity.RuntimeId)
             {
-                uint? requestOpCode = message is IAddressRequest request
-                    ? request.OpCode()
-                    : null;
-
                 ((IMessage)message).Dispose();
 
-                if (requestOpCode.HasValue)
+                if (responseType != null)
                 {
-                    FailRouteResponse(session, requestOpCode.Value, InnerErrorCode.ErrEntityNotFound, rpcId);
+                    SendAddressFailure(session, responseType, InnerErrorCode.ErrEntityNotFound, rpcId);
                 }
 
                 return false;
@@ -373,17 +372,31 @@ namespace Fantasy.Network.Interface
             return true;
         }
 
-        // 与上面找不到处理器时的作答一致：释放报文，是请求就答这个错误码。
-        private void AnswerAddressMessage(Session session, uint rpcId, uint protocolCode, object message, uint error)
+        // 与上面找不到处理器时的作答一致：释放报文，是请求就答这个错误码（responseType 只有请求才有）。
+        private static void AnswerAddressMessage(Session session, uint rpcId, object message, uint error, Type? responseType)
         {
-            var isRequest = rpcId != 0 && message is IAddressRequest;
-
             ((IMessage)message).Dispose();
 
-            if (isRequest)
+            if (rpcId != 0 && responseType != null)
             {
-                FailRouteResponse(session, protocolCode, error, rpcId);
+                SendAddressFailure(session, responseType, error, rpcId);
             }
+        }
+
+        // 与下面 CreateRouteResponse 的选法一致：登记了答复类型的用它，没登记的用 AddressResponse。
+        private Type RouteResponseType(uint requestOpCode)
+        {
+            return _responseTypeDictionary.TryGetValue(requestOpCode, out var responseType)
+                ? responseType
+                : typeof(AddressResponse);
+        }
+
+        // 发出的答复与下面 FailRouteResponse 的相同；答复类型用到达时取好的，不再查这个分发组件的表。
+        private static void SendAddressFailure(Session session, Type responseType, uint error, uint rpcId)
+        {
+            var response = (IAddressResponse)Activator.CreateInstance(responseType);
+            response.ErrorCode = error;
+            session.Send(response, responseType, rpcId);
         }
 
         private static void SettleAddressMessage(IAddressMessageInterceptor interceptor, Session session, Entity entity, uint protocolCode, AddressMessageOutcome outcome, object token)
