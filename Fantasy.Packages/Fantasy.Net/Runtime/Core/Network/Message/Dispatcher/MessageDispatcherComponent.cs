@@ -154,6 +154,17 @@ namespace Fantasy.Network.Interface
             messageHandler(session, rpcId, message).Coroutine();
         }
 #if FANTASY_NET
+        /// <summary>
+        /// 查询指定协议号的路由消息是否已注册处理器，只做查询，不交出处理器表。
+        /// </summary>
+        /// <param name="protocolCode">路由消息的协议号</param>
+        /// <returns>已注册处理器返回 true，否则返回 false</returns>
+        public bool HasAddressMessageHandler(uint protocolCode)
+        {
+            return _routeMessageHandlerDictionary != null &&
+                   _routeMessageHandlerDictionary.TryGetValue(protocolCode, out _);
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private async FTask<bool> InnerAddressMessageHandler(Session session, Entity entity, uint rpcId, uint protocolCode, object message)
         {
