@@ -96,5 +96,23 @@ namespace Fantasy.Async
                 
             coroutineLock.Release(waitingKey);
         }
+
+        /// <summary>
+        /// 观察一个协程锁此刻的状态：是否被持有、排队等待的个数、队首等待者的标记与超时时间。
+        /// 交回的是一份值拷贝，不交出锁表与等待者，也不会为没有创建过的锁职责创建协程锁。
+        /// 只能在所属Scene的线程上调用，写这些状态的也是这个线程。
+        /// </summary>
+        /// <param name="lockDuty">锁职责</param>
+        /// <param name="waitForId">锁队列Id</param>
+        /// <returns>这一刻的状态拷贝；该锁职责没有协程锁时为未持有、无人等待</returns>
+        public CoroutineLockState Observe(long lockDuty, long waitForId)
+        {
+            if (!_coroutineLocks.TryGetValue(lockDuty, out var coroutineLock))
+            {
+                return default;
+            }
+
+            return coroutineLock.Observe(waitForId);
+        }
     }
 }
