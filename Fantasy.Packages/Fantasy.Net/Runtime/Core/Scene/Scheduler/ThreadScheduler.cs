@@ -9,6 +9,7 @@ namespace Fantasy
     {
         /// <summary>
         /// 更新主线程调度器，只能在驱动主线程调度器的同一条线程上调用。
+        /// 不得在调度器执行的回调里再次调用，否则会让同一次调度里的 Scene 被重复更新。
         /// </summary>
         public static void Update()
         {
