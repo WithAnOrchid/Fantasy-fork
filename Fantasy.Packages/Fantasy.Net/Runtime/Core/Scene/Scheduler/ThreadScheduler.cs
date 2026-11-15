@@ -3,6 +3,20 @@
 namespace Fantasy
 {
     /// <summary>
+    /// 供不使用框架入口、自行驱动主线程调度器的宿主使用的调度泵。
+    /// </summary>
+    public static class ThreadSchedulerPump
+    {
+        /// <summary>
+        /// 更新主线程调度器，只能在驱动主线程调度器的同一条线程上调用。
+        /// </summary>
+        public static void Update()
+        {
+            ThreadScheduler.Update();
+        }
+    }
+
+    /// <summary>
     /// 线程调度器
     /// </summary>
     internal static class ThreadScheduler
