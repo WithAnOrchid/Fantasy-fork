@@ -93,6 +93,10 @@ namespace Fantasy.Async
 
         private bool _isPool;
 
+#if FANTASY_NET
+        private static readonly bool IsCollectibleType = typeof(T).IsCollectible;
+#endif
+
         [ThreadStatic]
         private static Stack<FThreadTask<T>>? _caches;
 
@@ -147,6 +151,18 @@ namespace Fantasy.Async
             {
                 return;
             }
+
+#if FANTASY_NET
+            if (IsCollectibleType)
+            {
+                _isPool = false;
+                _value = default!;
+                _exception = null;
+                _callBack = null;
+                _status = (int)STaskStatus.Pending;
+                return;
+            }
+#endif
 
             var caches = _caches;
             if (caches == null)

@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
+using System.Reflection;
 using System.Threading.Tasks;
 using Fantasy.Async;
 using Fantasy.DataStructure.Collection;
@@ -131,6 +132,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档中指定字段的求和结果。</returns>
         public async FTask<long> Sum<T>(Expression<Func<T, bool>> filter, Expression<Func<T, object>> sumExpression, string? collection = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var member = (MemberExpression)((UnaryExpression)sumExpression.Body).Operand;
             var projection = new BsonDocument("_id", "null").Add("Result", new BsonDocument("$sum", $"${member.Member.Name}"));
             var data = await GetCollection<T>(collection).Aggregate().Match(filter).Group(projection).FirstOrDefaultAsync();
@@ -186,6 +188,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档数量。</returns>
         public async FTask<long> Count<T>(Expression<Func<T, bool>> filter, string? collection = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             return await GetCollection<T>(collection).CountDocumentsAsync(filter);
         }
 
@@ -323,6 +326,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档列表。</returns>
         public async FTask<List<T>> QueryByPage<T>(Expression<Func<T, bool>> filter, int pageIndex, int pageSize, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -358,6 +362,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档列表。</returns>
         public async FTask<List<T>> QueryByPage<T>(Expression<Func<T, bool>> filter, int pageIndex, int pageSize, string[] cols, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -400,6 +405,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档列表。</returns>
         public async FTask<List<T>> QueryByPageOrderBy<T>(Expression<Func<T, bool>> filter, int pageIndex, int pageSize, Expression<Func<T, object>> orderByExpression, bool isAsc = true, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -439,6 +445,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的第一个文档，如果未找到则为 null。</returns>
         public async FTask<T?> First<T>(Expression<Func<T, bool>> filter, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
                 using var cursor = await GetCollection<T>(collection).FindAsync(filter);
@@ -503,6 +510,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档列表。</returns>
         public async FTask<List<T>> QueryOrderBy<T>(Expression<Func<T, bool>> filter, Expression<Func<T, object>> orderByExpression, bool isAsc = true, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -542,6 +550,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档列表。</returns>
         public async FTask<List<T>> Query<T>(Expression<Func<T, bool>> filter, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -720,6 +729,7 @@ namespace Fantasy.Database
         /// <returns>满足条件的文档列表。</returns>
         public async FTask<List<T>> Query<T>(Expression<Func<T, bool>> filter, string[] cols, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -758,6 +768,7 @@ namespace Fantasy.Database
         /// <returns></returns>
         public async FTask<List<T>> Query<T>(Expression<Func<T, bool>> filter, Expression<Func<T, object>>[] cols, bool isDeserialize = false, string? collection = null, Scene? scene = null) where T : Entity
         {
+            filter = SanitizeFilter(filter);
             var currentScene = scene ?? _scene;
             using (await _dataBaseLock.Wait(RandomHelper.RandInt64() % DefaultTaskSize))
             {
@@ -856,6 +867,7 @@ namespace Fantasy.Database
                 return;
             }
 
+            filter = SanitizeFilter(filter);
             T clone = _serializer.CloneEntity(entity);
 
             using (await _dataBaseLock.Wait(clone.Id))
@@ -1021,6 +1033,7 @@ namespace Fantasy.Database
         public async FTask<long> Remove<T>(long coroutineLockQueueKey, object transactionSession,
             Expression<Func<T, bool>> filter, string? collection = null) where T : Entity, new()
         {
+            filter = SanitizeFilter(filter);
             using (await _dataBaseLock.Wait(coroutineLockQueueKey))
             {
                 var result = await GetCollection<T>(collection)
@@ -1040,6 +1053,7 @@ namespace Fantasy.Database
         public async FTask<long> Remove<T>(long coroutineLockQueueKey, Expression<Func<T, bool>> filter,
             string? collection = null) where T : Entity, new()
         {
+            filter = SanitizeFilter(filter);
             using (await _dataBaseLock.Wait(coroutineLockQueueKey))
             {
                 var result = await GetCollection<T>(collection).DeleteManyAsync(filter);
@@ -1170,6 +1184,149 @@ namespace Fantasy.Database
             await _mongoDatabase.CreateCollectionAsync(name);
 
             _collections.Add(name);
+        }
+
+        #endregion
+
+        #region CollectibleClosureGuard
+
+        private static Expression<Func<T, bool>> SanitizeFilter<T>(Expression<Func<T, bool>> filter)
+        {
+            if (filter == null)
+            {
+                return null;
+            }
+
+            return (Expression<Func<T, bool>>)ClosureInlineVisitor.Instance.Visit(filter);
+        }
+
+        private sealed class ClosureInlineVisitor : ExpressionVisitor
+        {
+            public static readonly ClosureInlineVisitor Instance = new();
+
+            protected override Expression VisitMember(MemberExpression node)
+            {
+                if (node.Expression == null)
+                {
+                    if (node.Member.DeclaringType?.Assembly.IsCollectible == true &&
+                        TryReadMemberValue(null, node.Member, out var staticValue))
+                    {
+                        return Expression.Constant(staticValue, node.Type);
+                    }
+
+                    return base.VisitMember(node);
+                }
+
+                var visitedTarget = Visit(node.Expression);
+                if (visitedTarget is ConstantExpression constantTarget)
+                {
+                    if (constantTarget.Value != null &&
+                        TryReadMemberValue(constantTarget.Value, node.Member, out var memberValue))
+                    {
+                        return Expression.Constant(memberValue, node.Type);
+                    }
+                }
+
+                return ReferenceEquals(visitedTarget, node.Expression)
+                    ? node
+                    : node.Update(visitedTarget);
+            }
+
+            protected override Expression VisitUnary(UnaryExpression node)
+            {
+                var visitedOperand = Visit(node.Operand);
+                if (visitedOperand is ConstantExpression constantOperand &&
+                    (node.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked) &&
+                    node.Method == null &&
+                    (constantOperand.Type.Assembly.IsCollectible || node.Type.Assembly.IsCollectible))
+                {
+                    if (constantOperand.Value == null)
+                    {
+                        return Expression.Constant(null, node.Type);
+                    }
+
+                    var targetType = Nullable.GetUnderlyingType(node.Type) ?? node.Type;
+                    var converted = targetType.IsEnum
+                        ? Enum.ToObject(targetType, constantOperand.Value)
+                        : Convert.ChangeType(constantOperand.Value, targetType);
+                    return Expression.Constant(converted, node.Type);
+                }
+
+                return ReferenceEquals(visitedOperand, node.Operand)
+                    ? node
+                    : node.Update(visitedOperand);
+            }
+
+            protected override Expression VisitMethodCall(MethodCallExpression node)
+            {
+                var visitedObject = node.Object == null ? null : Visit(node.Object);
+                Expression[]? visitedArgs = null;
+                var argsChanged = false;
+                var allConstants = visitedObject == null || visitedObject is ConstantExpression;
+                var count = node.Arguments.Count;
+                for (var i = 0; i < count; i++)
+                {
+                    var original = node.Arguments[i];
+                    var visited = Visit(original);
+                    if (!ReferenceEquals(visited, original))
+                    {
+                        visitedArgs ??= new Expression[count];
+                        for (var j = 0; j < i; j++)
+                        {
+                            visitedArgs[j] = node.Arguments[j];
+                        }
+
+                        argsChanged = true;
+                    }
+
+                    if (visitedArgs != null)
+                    {
+                        visitedArgs[i] = visited;
+                    }
+
+                    if (visited is not ConstantExpression)
+                    {
+                        allConstants = false;
+                    }
+                }
+
+                if (allConstants && node.Method.DeclaringType?.Assembly.IsCollectible == true)
+                {
+                    var target = (visitedObject as ConstantExpression)?.Value;
+                    var rawArgs = new object?[count];
+                    for (var i = 0; i < count; i++)
+                    {
+                        var argExpr = visitedArgs != null ? visitedArgs[i] : node.Arguments[i];
+                        rawArgs[i] = ((ConstantExpression)argExpr).Value;
+                    }
+
+                    var result = node.Method.Invoke(target, rawArgs);
+                    return Expression.Constant(result, node.Type);
+                }
+
+                if (!argsChanged && ReferenceEquals(visitedObject, node.Object))
+                {
+                    return node;
+                }
+
+                return node.Update(visitedObject, visitedArgs ?? (IEnumerable<Expression>)node.Arguments);
+            }
+
+            private static bool TryReadMemberValue(object? instance, MemberInfo member, out object? value)
+            {
+                switch (member)
+                {
+                    case FieldInfo field:
+                        value = field.GetValue(instance);
+                        return true;
+                    case PropertyInfo property when property.GetIndexParameters().Length == 0:
+                        value = property.GetValue(instance);
+                        return true;
+                    default:
+                        value = null;
+                        return false;
+                }
+            }
         }
 
         #endregion
