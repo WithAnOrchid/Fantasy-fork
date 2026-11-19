@@ -125,6 +125,33 @@ namespace Fantasy.Async
             }
         }
 
+        /// <summary>
+        /// 当前被持有的锁队列Id个数。只能在所属Scene的线程上读取，写这些状态的也是这个线程。
+        /// </summary>
+        public int HeldKeyCount => _queue.Count;
+
+        /// <summary>
+        /// 观察一个锁队列Id此刻的状态：是否被持有、排队等待的个数、队首等待者的标记与超时时间。
+        /// 交回的是一份值拷贝，不交出队列与等待者。只能在所属Scene的线程上调用，写这些状态的也是这个线程。
+        /// </summary>
+        /// <param name="waitForId">锁队列Id</param>
+        /// <returns>这一刻的状态拷贝；没有被持有时为未持有、无人等待</returns>
+        public CoroutineLockState Observe(long waitForId)
+        {
+            if (!_queue.TryGetValue(waitForId, out var coroutineLockQueue))
+            {
+                return default;
+            }
+
+            if (coroutineLockQueue.Count == 0)
+            {
+                return new CoroutineLockState(true, 0, null, 0);
+            }
+
+            var head = coroutineLockQueue.Peek();
+            return new CoroutineLockState(true, coroutineLockQueue.Count, head.Tag, head.TimeOut);
+        }
+
         private bool TryCoroutineLockQueueDequeue(CoroutineLockQueue coroutineLockQueue)
         {
             if (!coroutineLockQueue.TryDequeue(out var waitCoroutineLock))
@@ -167,6 +194,37 @@ namespace Fantasy.Async
         public void SetIsPool(bool isPool)
         {
             _isPool = isPool;
+        }
+    }
+
+    /// <summary>
+    /// 协程锁某个锁队列Id在某一刻的状态拷贝。只是值：读取之后锁再变化，它不会跟着变；改动它也不会影响锁。
+    /// </summary>
+    public readonly struct CoroutineLockState
+    {
+        /// <summary>
+        /// 是否被持有
+        /// </summary>
+        public bool Held { get; }
+        /// <summary>
+        /// 排队等待的个数，不含持有者
+        /// </summary>
+        public int Waiting { get; }
+        /// <summary>
+        /// 队首等待者的标记，没有等待者时为null
+        /// </summary>
+        public string HeadTag { get; }
+        /// <summary>
+        /// 队首等待者的超时时间（毫秒），没有等待者时为0
+        /// </summary>
+        public int HeadTimeOut { get; }
+
+        internal CoroutineLockState(bool held, int waiting, string headTag, int headTimeOut)
+        {
+            Held = held;
+            Waiting = waiting;
+            HeadTag = headTag;
+            HeadTimeOut = headTimeOut;
         }
     }
 
