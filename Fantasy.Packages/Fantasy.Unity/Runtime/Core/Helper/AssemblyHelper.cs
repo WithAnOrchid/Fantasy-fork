@@ -40,5 +40,19 @@ namespace Fantasy.Helper
             
             staticMethod.Invoke(null, null);
         }
+
+        /// <summary>
+        /// 确保程序集已加载并等待框架生命周期注册完成
+        /// </summary>
+        /// <param name="assembly">要加载的程序集</param>
+        public static async System.Threading.Tasks.Task EnsureLoadedAsync(this System.Reflection.Assembly assembly)
+        {
+            EnsureLoaded(assembly);
+
+            if (Fantasy.Assembly.AssemblyManifest.TryGetLoadTask(assembly, out var loadTask))
+            {
+                await loadTask.ConfigureAwait(false);
+            }
+        }
     }
 }

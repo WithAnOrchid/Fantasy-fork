@@ -75,6 +75,7 @@ namespace Fantasy.DataStructure.Collection
 
             if (handles.Length == 0)
             {
+                Remove(segmentKey);
                 return;
             }
 

@@ -25,6 +25,10 @@ namespace Fantasy.Pool
         [ThreadStatic]
         private static Queue<T>? _poolQueue;
 
+#if FANTASY_NET
+        private static readonly bool IsCollectibleType = typeof(T).IsCollectible;
+#endif
+
         /// <summary>
         /// 获取当前线程池子里可用的数量
         /// </summary>
@@ -73,6 +77,13 @@ namespace Fantasy.Pool
                 return;
             }
 
+#if FANTASY_NET
+            if (IsCollectibleType)
+            {
+                return;
+            }
+#endif
+
             var poolQueue = _poolQueue;
             if (poolQueue == null)
             {
@@ -102,6 +113,13 @@ namespace Fantasy.Pool
 
             reset(t);
 
+#if FANTASY_NET
+            if (IsCollectibleType)
+            {
+                return;
+            }
+#endif
+
             var poolQueue = _poolQueue;
             if (poolQueue == null)
             {
@@ -125,6 +143,7 @@ namespace Fantasy.Pool
             if (poolQueue != null)
             {
                 poolQueue.Clear();
+                _poolQueue = null;
             }
         }
     }

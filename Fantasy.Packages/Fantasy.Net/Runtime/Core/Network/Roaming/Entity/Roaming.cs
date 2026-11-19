@@ -98,21 +98,48 @@ public sealed class Roaming : Entity
     /// <returns></returns>
     internal async FTask SetForwardSessionAddress(long forwardSessionAddress)
     {
-        using var response = await Scene.NetworkMessagingComponent.Call(
-            TargetSceneAddress,
-            new I_SetForwardSessionAddressRequest()
-            {
-                RoamingId = SessionRoamingComponent!.Id,
-                ForwardSessionAddress = forwardSessionAddress
-            });
-
-        if (response.ErrorCode == 0)
+        if (IsDisposed || RoamingLock == null)
         {
-            ForwardSessionAddress = forwardSessionAddress;
             return;
         }
 
-        Log.Warning($"SetForwardSessionAddress failed with ErrorCode: {response.ErrorCode}, RoamingId: {SessionRoamingComponent!.Id}, TargetSceneAddress: {TargetSceneAddress}");
+        var runtimeId = RuntimeId;
+        using (await RoamingLock.Wait(RoamingType, "Roaming.cs SetForwardSessionAddress"))
+        {
+            if (IsDisposed || runtimeId != RuntimeId || SessionRoamingComponent == null || SessionRoamingComponent.IsDisposed || TargetSceneAddress == 0)
+            {
+                return;
+            }
+
+            Fantasy.Network.Session currentSession = SessionRoamingComponent.Session;
+            if (currentSession == null || currentSession.IsDisposed || currentSession.RuntimeId != forwardSessionAddress)
+            {
+                return;
+            }
+
+            var roamingId = SessionRoamingComponent.Id;
+            var targetSceneAddress = TargetSceneAddress;
+            using var response = await Scene.NetworkMessagingComponent.Call(
+                targetSceneAddress,
+                new I_SetForwardSessionAddressRequest()
+                {
+                    RoamingId = roamingId,
+                    ForwardSessionAddress = forwardSessionAddress
+                });
+
+            if (IsDisposed || runtimeId != RuntimeId)
+            {
+                return;
+            }
+
+            if (response.ErrorCode == 0)
+            {
+                ForwardSessionAddress = forwardSessionAddress;
+                return;
+            }
+
+            Log.Warning($"SetForwardSessionAddress failed with ErrorCode: {response.ErrorCode}, RoamingId: {roamingId}, TargetSceneAddress: {targetSceneAddress}");
+        }
     }
 
     /// <summary>
@@ -122,19 +149,41 @@ public sealed class Roaming : Entity
     /// <returns></returns>
     internal async FTask StopForwarding()
     {
-        using var response = await Scene.NetworkMessagingComponent.Call(
-            TargetSceneAddress,
-            new I_StopForwardingRequest()
-            {
-                RoamingId = SessionRoamingComponent!.Id
-            });
-
-        if (response.ErrorCode == 0)
+        if (IsDisposed || RoamingLock == null)
         {
             return;
         }
 
-        Log.Warning($"StopForwarding failed with ErrorCode: {response.ErrorCode}, RoamingId: {SessionRoamingComponent!.Id}, TargetSceneAddress: {TargetSceneAddress}");
+        var runtimeId = RuntimeId;
+        using (await RoamingLock.Wait(RoamingType, "Roaming.cs StopForwarding"))
+        {
+            if (IsDisposed || runtimeId != RuntimeId || SessionRoamingComponent == null || SessionRoamingComponent.IsDisposed || TargetSceneAddress == 0)
+            {
+                return;
+            }
+
+            Fantasy.Network.Session currentSession = SessionRoamingComponent.Session;
+            if (currentSession != null && !currentSession.IsDisposed && currentSession.GetComponent<SessionRoamingFlgComponent>() != null)
+            {
+                return;
+            }
+
+            var roamingId = SessionRoamingComponent.Id;
+            var targetSceneAddress = TargetSceneAddress;
+            using var response = await Scene.NetworkMessagingComponent.Call(
+                targetSceneAddress,
+                new I_StopForwardingRequest()
+                {
+                    RoamingId = roamingId
+                });
+
+            if (response.ErrorCode == 0)
+            {
+                return;
+            }
+
+            Log.Warning($"StopForwarding failed with ErrorCode: {response.ErrorCode}, RoamingId: {roamingId}, TargetSceneAddress: {targetSceneAddress}");
+        }
     }
 
     /// <summary>
