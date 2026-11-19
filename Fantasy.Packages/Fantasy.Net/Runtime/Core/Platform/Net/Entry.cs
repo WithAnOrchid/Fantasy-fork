@@ -54,8 +54,16 @@ public static class Entry
     /// </summary>
     public static async FTask Start(ILog log = null)
     {
-        // 初始化
-        await Initialize(log);
+        // 初始化：通过调度泵推进直到完成，避免 Initialize 的 async 状态机及其迭代枚举器挂在主循环调用栈底导致可回收程序集无法卸载。
+        var initializeTask = Initialize(log);
+
+        while (!initializeTask.IsCompleted)
+        {
+            ThreadScheduler.Update();
+            Thread.Sleep(1);
+        }
+
+        await initializeTask;
 
         try
         {
@@ -77,7 +85,15 @@ public static class Entry
             
             // 所有Process和Scene启动成功后，
             // 才能向Control Center注册服务实例。
-            await StartServiceDiscovery();
+            var startServiceDiscoveryTask = StartServiceDiscovery();
+
+            while (!startServiceDiscoveryTask.IsCompleted)
+            {
+                ThreadScheduler.Update();
+                Thread.Sleep(1);
+            }
+
+            await startServiceDiscoveryTask;
         }
         catch
         {

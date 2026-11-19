@@ -22,6 +22,10 @@ namespace Fantasy.Pool
         [ThreadStatic]
         private static Stack<T>? _pool;
 
+#if FANTASY_NET
+        private static readonly bool IsCollectibleType = typeof(T).IsCollectible;
+#endif
+
         /// <summary>
         /// 从对象池中租用一个实例，如果池为空则创建一个新实例。
         /// </summary>
@@ -51,6 +55,14 @@ namespace Fantasy.Pool
             {
                 return;
             }
+
+#if FANTASY_NET
+            if (IsCollectibleType)
+            {
+                instance.SetIsPool(false);
+                return;
+            }
+#endif
 
             var pool = _pool;
             if (pool == null)

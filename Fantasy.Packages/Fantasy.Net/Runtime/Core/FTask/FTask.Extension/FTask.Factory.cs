@@ -99,6 +99,10 @@ namespace Fantasy.Async
 
         private bool _isPool;
 
+#if FANTASY_NET
+        private static readonly bool IsCollectibleType = typeof(T).IsCollectible;
+#endif
+
         /// <summary>
         /// 线程本地的对象池栈
         /// </summary>
@@ -156,6 +160,17 @@ namespace Fantasy.Async
             {
                 return;
             }
+
+#if FANTASY_NET
+            if (IsCollectibleType)
+            {
+                _isPool = false;
+                _value = default!;
+                _callBack = null;
+                _status = STaskStatus.Pending;
+                return;
+            }
+#endif
 
             var caches = _caches;
             if (caches == null)
