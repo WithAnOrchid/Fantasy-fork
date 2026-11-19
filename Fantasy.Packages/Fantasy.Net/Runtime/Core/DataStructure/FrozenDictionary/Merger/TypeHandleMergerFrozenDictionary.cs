@@ -37,6 +37,7 @@ namespace Fantasy.DataStructure.Dictionary
 
             if (length == 0)
             {
+                Remove(segmentKey);
                 return;
             }
             
@@ -72,6 +73,11 @@ namespace Fantasy.DataStructure.Dictionary
 
                 if (length == 0)
                 {
+                    if (_segments.Remove(segmentKey, out var removedSegment))
+                    {
+                        _count -= removedSegment.Count;
+                        hasChanges = true;
+                    }
                     continue;
                 }
                 

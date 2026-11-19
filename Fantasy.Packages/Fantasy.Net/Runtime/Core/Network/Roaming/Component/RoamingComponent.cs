@@ -168,7 +168,7 @@ public sealed class RoamingComponent : Entity
     /// <returns>创建成功会返回SessionRoamingComponent组件，这个组件提供漫游的所有功能。</returns>
     internal async FTask<CreateRoamingResult> Create(Session session, long roamingId, int delayRemove)
     {
-        if (_isInnerDisposed)
+        if (_isInnerDisposed || IsDisposed || session == null || session.IsDisposed)
         {
             return new CreateRoamingResult(CreateRoamingStatus.None, null);
         }
@@ -194,6 +194,7 @@ public sealed class RoamingComponent : Entity
                 sessionRoamingComponent = Entity.Create<SessionRoamingComponent>(Scene, roamingId, true, true);
                 sessionRoamingComponent.Initialize(session);
                 _sessionRoamingComponents.Add(roamingId, sessionRoamingComponent);
+                session.AddComponent<SessionRoamingFlgComponent>(roamingId).DelayRemove = delayRemove;
                 status = CreateRoamingStatus.NewCreated;
             }
             else
@@ -212,20 +213,23 @@ public sealed class RoamingComponent : Entity
                     }
                     parentSession.SessionRoamingComponent = null;
                 }
-                else
-                {
-                    // 有可能关联的Session已经断开过，需要清除下定时删除任务
-                    session.Scene.RoamingComponent.CancelRemoveTask(roamingId);
-                }
+
+                // 不论旧Session是否仍非空或已释放，都要取消可能已排队的延迟删除任务
+                CancelRemoveTask(roamingId);
 
                 sessionRoamingComponent.Session = session;
                 session.SessionRoamingComponent = sessionRoamingComponent;
+                session.AddComponent<SessionRoamingFlgComponent>(roamingId).DelayRemove = delayRemove;
                 // 重新设定ForwardSessionAddress
                 await sessionRoamingComponent.SetForwardSessionAddress(session);
+                Session currentSession = sessionRoamingComponent.Session;
+                if (_isInnerDisposed || IsDisposed || session.IsDisposed || sessionRoamingComponent.IsDisposed || !ReferenceEquals(currentSession, session))
+                {
+                    return new CreateRoamingResult(CreateRoamingStatus.None, null);
+                }
+
                 status = CreateRoamingStatus.AlreadyExists;
             }
-            
-            session.AddComponent<SessionRoamingFlgComponent>(roamingId).DelayRemove = delayRemove;
         }
 
         return new CreateRoamingResult(status, sessionRoamingComponent!);

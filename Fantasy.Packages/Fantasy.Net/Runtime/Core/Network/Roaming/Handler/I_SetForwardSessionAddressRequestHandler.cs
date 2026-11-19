@@ -23,7 +23,6 @@ internal sealed class
             return;
         }
 
-        terminus.StopForwarding = false;
         terminus.ForwardSessionAddress = request.ForwardSessionAddress;
         await FTask.CompletedTask;
     }
