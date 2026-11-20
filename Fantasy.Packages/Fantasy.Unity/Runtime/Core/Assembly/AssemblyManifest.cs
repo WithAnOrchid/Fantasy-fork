@@ -117,6 +117,9 @@ namespace Fantasy.Assembly
         internal static readonly ConcurrentDictionary<long, AssemblyManifest> Manifests = new ConcurrentDictionary<long, AssemblyManifest>();
 #endif
         private static readonly object ManifestSyncLock = new object();
+#if FANTASY_NET
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Reflection.Assembly, System.Collections.Generic.HashSet<long>> CollectibleUnloadHookedIds = new();
+#endif
 
         /// <summary>
         /// 程序集加载生命周期任务
@@ -340,6 +343,29 @@ namespace Fantasy.Assembly
             {
                 hasExisting = Manifests.TryGetValue(assemblyManifestId, out existing) && !ReferenceEquals(existing, manifest);
                 Manifests[assemblyManifestId] = manifest;
+#if FANTASY_NET
+                if (manifest.Assembly is { IsCollectible: true } collectibleAssembly &&
+                    System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(collectibleAssembly) is { } loadContext)
+                {
+                    if (!CollectibleUnloadHookedIds.TryGetValue(collectibleAssembly, out var hookedIds))
+                    {
+                        hookedIds = new System.Collections.Generic.HashSet<long>();
+                        CollectibleUnloadHookedIds.Add(collectibleAssembly, hookedIds);
+                    }
+
+                    if (hookedIds.Add(assemblyManifestId))
+                    {
+                        var weakAssembly = new WeakReference<System.Reflection.Assembly>(collectibleAssembly);
+                        loadContext.Unloading += _ =>
+                        {
+                            if (weakAssembly.TryGetTarget(out var unloadingAssembly))
+                            {
+                                Unregister(assemblyManifestId, unloadingAssembly);
+                            }
+                        };
+                    }
+                }
+#endif
             }
 
             if (hasExisting)
@@ -413,7 +439,8 @@ namespace Fantasy.Assembly
                         return;
                     }
 #if FANTASY_NET
-                    if (unloadingAssembly.IsCollectible)
+                    if (unloadingAssembly.IsCollectible ||
+                        (ReferenceEquals(unloadingAssembly, typeof(object).Assembly) && manifest.Assembly is { IsCollectible: true }))
                     {
                         return;
                     }
