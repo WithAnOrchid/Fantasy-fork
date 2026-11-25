@@ -1190,14 +1190,118 @@ namespace Fantasy.Database
 
         #region CollectibleClosureGuard
 
-        private static Expression<Func<T, bool>> SanitizeFilter<T>(Expression<Func<T, bool>> filter)
+        /// <summary>
+        /// 若过滤表达式引用了可回收程序集中的闭包或成员，则将其常量值内联，避免 MongoDB LINQ 解释缓存持有可回收程序集引用。
+        /// 对未引用可回收程序集的常规过滤表达式直接短路返回原实例，零改写、零额外分配。
+        /// </summary>
+        public static Expression<Func<T, bool>> SanitizeFilter<T>(Expression<Func<T, bool>> filter)
         {
             if (filter == null)
             {
                 return null;
             }
 
+            if (!MayContainCollectibleReference(filter))
+            {
+                return filter;
+            }
+
             return (Expression<Func<T, bool>>)ClosureInlineVisitor.Instance.Visit(filter);
+        }
+
+        private static bool MayContainCollectibleReference(Expression? node)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            if (node.Type.IsCollectible)
+            {
+                return true;
+            }
+
+            switch (node)
+            {
+                case ParameterExpression:
+                    return false;
+                case ConstantExpression constant:
+                    return constant.Value != null &&
+                           (constant.Value.GetType().IsCollectible ||
+                            (constant.Value is Type typeValue && typeValue.IsCollectible) ||
+                            (constant.Value is MemberInfo memberInfo && memberInfo.DeclaringType?.IsCollectible == true) ||
+                            (constant.Value is Delegate del &&
+                             (del.Method.DeclaringType?.IsCollectible == true ||
+                              del.Target?.GetType().IsCollectible == true)));
+                case MemberExpression member:
+                    return member.Member.DeclaringType?.IsCollectible == true ||
+                           MayContainCollectibleReference(member.Expression);
+                case BinaryExpression binary:
+                    return binary.Method?.DeclaringType?.IsCollectible == true ||
+                           MayContainCollectibleReference(binary.Left) ||
+                           MayContainCollectibleReference(binary.Right) ||
+                           MayContainCollectibleReference(binary.Conversion);
+                case UnaryExpression unary:
+                    return unary.Method?.DeclaringType?.IsCollectible == true ||
+                           MayContainCollectibleReference(unary.Operand);
+                case LambdaExpression lambda:
+                    return MayContainCollectibleReference(lambda.Body);
+                case MethodCallExpression call:
+                    return call.Method.DeclaringType?.IsCollectible == true ||
+                           HasCollectibleGenericArgument(call.Method) ||
+                           MayContainCollectibleReference(call.Object) ||
+                           AnyMayContainCollectibleReference(call.Arguments);
+                case ConditionalExpression conditional:
+                    return MayContainCollectibleReference(conditional.Test) ||
+                           MayContainCollectibleReference(conditional.IfTrue) ||
+                           MayContainCollectibleReference(conditional.IfFalse);
+                case NewExpression newExpr:
+                    return newExpr.Constructor?.DeclaringType?.IsCollectible == true ||
+                           AnyMayContainCollectibleReference(newExpr.Arguments);
+                case NewArrayExpression newArray:
+                    return AnyMayContainCollectibleReference(newArray.Expressions);
+                case InvocationExpression invocation:
+                    return MayContainCollectibleReference(invocation.Expression) ||
+                           AnyMayContainCollectibleReference(invocation.Arguments);
+                case TypeBinaryExpression typeBinary:
+                    return typeBinary.TypeOperand.IsCollectible ||
+                           MayContainCollectibleReference(typeBinary.Expression);
+                default:
+                    // 未列举的表达式节点类型保守回退到改写器，确保不漏掉任何可回收引用。
+                    return true;
+            }
+        }
+
+        private static bool HasCollectibleGenericArgument(MethodInfo method)
+        {
+            if (!method.IsGenericMethod)
+            {
+                return false;
+            }
+
+            var genericArguments = method.GetGenericArguments();
+            for (var i = 0; i < genericArguments.Length; i++)
+            {
+                if (genericArguments[i].IsCollectible)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool AnyMayContainCollectibleReference(System.Collections.ObjectModel.ReadOnlyCollection<Expression> expressions)
+        {
+            for (var i = 0; i < expressions.Count; i++)
+            {
+                if (MayContainCollectibleReference(expressions[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private sealed class ClosureInlineVisitor : ExpressionVisitor
