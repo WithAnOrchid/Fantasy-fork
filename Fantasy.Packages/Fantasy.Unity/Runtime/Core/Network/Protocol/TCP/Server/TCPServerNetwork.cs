@@ -22,6 +22,57 @@ namespace Fantasy.Network.TCP
         private SocketAsyncEventArgs _acceptAsync;
         private readonly Dictionary<uint, INetworkChannel> _connectionChannel = new Dictionary<uint, INetworkChannel>();
 
+        /// <summary>
+        /// 可选的每连接待发送字节硬上限覆写；为 null 时外网使用 <see cref="ProgramDefine.OuterTcpMaxPendingSendBytes"/>，内网默认不限。
+        /// </summary>
+        public long? MaxPendingSendBytes { get; set; }
+
+        /// <summary>
+        /// 可选的每连接最老未写出包龄硬限覆写（毫秒）；为 null 时外网使用 <see cref="ProgramDefine.OuterTcpMaxPendingSendAgeMs"/>，内网默认不限。
+        /// </summary>
+        public long? MaxPendingSendAgeMs { get; set; }
+
+        /// <summary>
+        /// 可选的已接入连接 Socket 发送缓冲区大小覆写（字节）；为 null 时沿用监听 Socket 继承配置。
+        /// </summary>
+        public int? AcceptedSocketSendBufferSize { get; set; }
+
+        /// <summary>
+        /// 当前活跃连接数。
+        /// </summary>
+        public int ConnectionCount => _connectionChannel.Count;
+
+        /// <summary>
+        /// 拷贝当前活跃的 TCP 服务端通道快照。
+        /// </summary>
+        public TCPServerNetworkChannel[] CopyChannels()
+        {
+            var result = new TCPServerNetworkChannel[_connectionChannel.Count];
+            var index = 0;
+
+            foreach (var channel in _connectionChannel.Values)
+            {
+                if (channel is TCPServerNetworkChannel tcpChannel)
+                {
+                    result[index++] = tcpChannel;
+                }
+            }
+
+            if (index != result.Length)
+            {
+                Array.Resize(ref result, index);
+            }
+
+            return result;
+        }
+
+        internal (long MaxPendingSendBytes, long MaxPendingSendAgeMs) ResolveSendBackpressureLimits()
+        {
+            var maxBytes = MaxPendingSendBytes ?? (NetworkTarget == NetworkTarget.Outer ? ProgramDefine.OuterTcpMaxPendingSendBytes : 0L);
+            var maxAgeMs = MaxPendingSendAgeMs ?? (NetworkTarget == NetworkTarget.Outer ? ProgramDefine.OuterTcpMaxPendingSendAgeMs : 0L);
+            return (maxBytes, maxAgeMs);
+        }
+
         public void Initialize(NetworkTarget networkTarget, IPEndPoint address)
         {
             base.Initialize(NetworkType.Server, NetworkProtocolType.TCP, networkTarget, false);
@@ -115,6 +166,11 @@ namespace Fantasy.Network.TCP
                 {
                     channelId = 0xC0000000 | (uint)_random.Next();
                 } while (_connectionChannel.ContainsKey(channelId));
+
+                if (AcceptedSocketSendBufferSize is > 0 and var sendBufferSize)
+                {
+                    acceptSocket.SendBufferSize = sendBufferSize;
+                }
 
                 channel = new TCPServerNetworkChannel(this, acceptSocket, channelId);
                 acceptSocket = null;
