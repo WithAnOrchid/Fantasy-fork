@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Fantasy.Async;
+using Fantasy.Helper;
 using Fantasy.Network.Interface;
 using Fantasy.PacketParser;
 using Fantasy.Serialize;
@@ -24,20 +25,85 @@ namespace Fantasy.Network.TCP
 {
     public sealed class TCPServerNetworkChannel : ANetworkServerChannel
     {
+        private readonly struct PendingSendEntry
+        {
+            public readonly MemoryStreamBuffer Buffer;
+            public readonly int ByteCount;
+            public readonly long EnqueuedAtMs;
+
+            public PendingSendEntry(MemoryStreamBuffer buffer, int byteCount, long enqueuedAtMs)
+            {
+                Buffer = buffer;
+                ByteCount = byteCount;
+                EnqueuedAtMs = enqueuedAtMs;
+            }
+        }
+
         private bool _isSending;
-        private bool _isInnerDispose;
+        private volatile bool _isInnerDispose;
+        private long _pendingSendBytes;
+        private int _inFlightBytes;
+        private long _inFlightEnqueuedAtMs;
+        private long _maxPendingSendBytes;
+        private long _maxPendingSendAgeMs;
         private readonly Socket _socket;
         private readonly ANetwork _network;
         private readonly Pipe _pipe = new Pipe();
         private readonly SocketAsyncEventArgs _sendArgs;
         private readonly ReadOnlyMemoryPacketParser _packetParser;
-        private readonly Queue<MemoryStreamBuffer> _sendBuffers = new Queue<MemoryStreamBuffer>();
+        private readonly Queue<PendingSendEntry> _sendBuffers = new Queue<PendingSendEntry>();
         private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
+
+        /// <summary>
+        /// 当前在途与排队待发送的总字节数。
+        /// </summary>
+        public long PendingSendBytes => _pendingSendBytes;
+
+        /// <summary>
+        /// 当前在途与排队待发送的数据包数量。
+        /// </summary>
+        public int PendingSendCount => _sendBuffers.Count + (_inFlightBytes > 0 ? 1 : 0);
+
+        /// <summary>
+        /// 最老未写出数据包的入队时间戳（毫秒）；无待发送数据时为 0。
+        /// </summary>
+        public long OldestPendingSendEnqueueTimeMs
+        {
+            get
+            {
+                if (_inFlightEnqueuedAtMs > 0)
+                {
+                    return _inFlightEnqueuedAtMs;
+                }
+
+                return _sendBuffers.TryPeek(out var head) ? head.EnqueuedAtMs : 0;
+            }
+        }
+
+        /// <summary>
+        /// 当前通道生效的待发送字节硬上限；小于等于 0 表示不限。
+        /// </summary>
+        public long MaxPendingSendBytes => _maxPendingSendBytes;
+
+        /// <summary>
+        /// 当前通道生效的最老未写出包龄硬限（毫秒）；小于等于 0 表示不限。
+        /// </summary>
+        public long MaxPendingSendAgeMs => _maxPendingSendAgeMs;
 
         public TCPServerNetworkChannel(ANetwork network, Socket socket, uint id) : base(network, id, socket.RemoteEndPoint)
         {
             _socket = socket;
             _network = network;
+
+            if (network is TCPServerNetwork tcpServerNetwork)
+            {
+                (_maxPendingSendBytes, _maxPendingSendAgeMs) = tcpServerNetwork.ResolveSendBackpressureLimits();
+            }
+            else if (network.NetworkTarget == NetworkTarget.Outer)
+            {
+                _maxPendingSendBytes = ProgramDefine.OuterTcpMaxPendingSendBytes;
+                _maxPendingSendAgeMs = ProgramDefine.OuterTcpMaxPendingSendAgeMs;
+            }
 
             try
             {
@@ -51,6 +117,15 @@ namespace Fantasy.Network.TCP
                 Dispose();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// 更新当前通道的待发送字节上限与最老未写出包龄硬限（小于等于 0 表示不限）。
+        /// </summary>
+        public void ConfigureSendLimits(long maxPendingSendBytes, long maxPendingSendAgeMs)
+        {
+            _maxPendingSendBytes = maxPendingSendBytes;
+            _maxPendingSendAgeMs = maxPendingSendAgeMs;
         }
         
         internal void Start()
@@ -262,6 +337,60 @@ namespace Fantasy.Network.TCP
 
         #region Send
 
+        internal bool CheckSendBackpressure(long nowMs)
+        {
+            if (IsDisposed || _isInnerDispose)
+            {
+                return false;
+            }
+
+            if (!ExceedsSendBackpressure(_pendingSendBytes, nowMs, out var reason, out var oldestAgeMs))
+            {
+                return false;
+            }
+
+            Log.Warning(
+                $"TCPServerNetworkChannel backpressure limit exceeded ({reason}). " +
+                $"ChannelId:{Id} RemoteEndPoint:{RemoteEndPoint} " +
+                $"PendingBytes:{_pendingSendBytes} MaxBytes:{_maxPendingSendBytes} " +
+                $"OldestAgeMs:{oldestAgeMs} MaxAgeMs:{_maxPendingSendAgeMs} PendingCount:{PendingSendCount}");
+            Dispose();
+            return true;
+        }
+
+        private bool ExceedsSendBackpressure(long candidatePendingBytes, long nowMs, out string reason, out long oldestAgeMs)
+        {
+            var oldestEnqueuedAtMs = OldestPendingSendEnqueueTimeMs;
+            oldestAgeMs = oldestEnqueuedAtMs > 0 ? Math.Max(0, nowMs - oldestEnqueuedAtMs) : 0;
+
+            if (_maxPendingSendBytes > 0 && candidatePendingBytes > _maxPendingSendBytes)
+            {
+                reason = "pending-bytes";
+                return true;
+            }
+
+            if (_maxPendingSendAgeMs > 0 && oldestEnqueuedAtMs > 0 && oldestAgeMs >= _maxPendingSendAgeMs)
+            {
+                reason = "pending-age";
+                return true;
+            }
+
+            reason = string.Empty;
+            return false;
+        }
+
+        private void CompleteInFlightSend(MemoryStreamBuffer memoryStreamBuffer)
+        {
+            if (!_isInnerDispose)
+            {
+                _pendingSendBytes = Math.Max(0, _pendingSendBytes - _inFlightBytes);
+                _inFlightBytes = 0;
+                _inFlightEnqueuedAtMs = 0;
+            }
+
+            ReturnMemoryStream(memoryStreamBuffer);
+        }
+
         public override void Send(uint rpcId, long address, MemoryStreamBuffer memoryStream, IMessage message, Type messageType)
         {
             if (IsDisposed || _isInnerDispose)
@@ -269,8 +398,26 @@ namespace Fantasy.Network.TCP
                 message?.Dispose();
                 return;
             }
-            
-            _sendBuffers.Enqueue(_packetParser.Pack(ref rpcId, ref address, memoryStream, message, messageType));
+
+            var packed = _packetParser.Pack(ref rpcId, ref address, memoryStream, message, messageType);
+            var packetBytes = Math.Max(0, (int)packed.Position);
+            var now = TimeHelper.Now;
+            var candidatePendingBytes = _pendingSendBytes + packetBytes;
+
+            if (ExceedsSendBackpressure(candidatePendingBytes, now, out var reason, out var oldestAgeMs))
+            {
+                ReturnMemoryStream(packed);
+                Log.Warning(
+                    $"TCPServerNetworkChannel backpressure limit exceeded ({reason}). " +
+                    $"ChannelId:{Id} RemoteEndPoint:{RemoteEndPoint} " +
+                    $"PendingBytes:{candidatePendingBytes} MaxBytes:{_maxPendingSendBytes} " +
+                    $"OldestAgeMs:{oldestAgeMs} MaxAgeMs:{_maxPendingSendAgeMs} PendingCount:{PendingSendCount + 1}");
+                Dispose();
+                return;
+            }
+
+            _sendBuffers.Enqueue(new PendingSendEntry(packed, packetBytes, now));
+            _pendingSendBytes = candidatePendingBytes;
 
             if (!_isSending)
             {
@@ -280,15 +427,19 @@ namespace Fantasy.Network.TCP
         
         private void Send()
         {
-            if (_isSending || IsDisposed)
+            if (_isSending || IsDisposed || _isInnerDispose)
             {
                 return;
             }
             
             _isSending = true;
 
-            while (_sendBuffers.TryDequeue(out var memoryStreamBuffer))
+            while (_sendBuffers.TryDequeue(out var entry))
             {
+                var memoryStreamBuffer = entry.Buffer;
+                _inFlightBytes = entry.ByteCount;
+                _inFlightEnqueuedAtMs = entry.EnqueuedAtMs;
+
                 var offset = 0;
                 var totalLength = (int)memoryStreamBuffer.Position;
                 var buffer = memoryStreamBuffer.GetBuffer();
@@ -307,7 +458,7 @@ namespace Fantasy.Network.TCP
                         
                         if (_sendArgs.SocketError != SocketError.Success)
                         {
-                            ReturnMemoryStream(memoryStreamBuffer);
+                            CompleteInFlightSend(memoryStreamBuffer);
                             _isSending = false;
                             Dispose();
                             return;
@@ -316,7 +467,7 @@ namespace Fantasy.Network.TCP
                         var sent = _sendArgs.BytesTransferred;
                         if (sent == 0)
                         {
-                            ReturnMemoryStream(memoryStreamBuffer);
+                            CompleteInFlightSend(memoryStreamBuffer);
                             _isSending = false;
                             Dispose();
                             return;
@@ -326,7 +477,7 @@ namespace Fantasy.Network.TCP
                     }
                     catch
                     {
-                        ReturnMemoryStream(memoryStreamBuffer);
+                        CompleteInFlightSend(memoryStreamBuffer);
                         _isSending = false;
                         Dispose();
                         return;
@@ -334,7 +485,7 @@ namespace Fantasy.Network.TCP
                 }
                 
                 // 同步发送完整后归还 buffer
-                ReturnMemoryStream(memoryStreamBuffer);
+                CompleteInFlightSend(memoryStreamBuffer);
             }
             
             _isSending = false;
@@ -348,7 +499,7 @@ namespace Fantasy.Network.TCP
                 return;
             }
 
-            if (_isInnerDispose)
+            if (_network.IsDisposed)
             {
                 memoryStream.Dispose();
                 return;
@@ -356,13 +507,28 @@ namespace Fantasy.Network.TCP
 
             _network.MemoryStreamBufferPool.ReturnMemoryStream(memoryStream);
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void DisposeMemoryStream(MemoryStreamBuffer memoryStream)
+        {
+            if ((memoryStream.MemoryStreamBufferSource & MemoryStreamBufferSource.Return) == 0)
+            {
+                return;
+            }
+
+            memoryStream.Dispose();
+        }
         
         private void ClearSendBuffers()
         {
-            while (_sendBuffers.TryDequeue(out var memoryStreamBuffer))
+            while (_sendBuffers.TryDequeue(out var entry))
             {
-                ReturnMemoryStream(memoryStreamBuffer);
+                ReturnMemoryStream(entry.Buffer);
             }
+
+            _pendingSendBytes = 0;
+            _inFlightBytes = 0;
+            _inFlightEnqueuedAtMs = 0;
         }
         
         private void OnSendCompletedHandler(object sender, SocketAsyncEventArgs asyncEventArgs)
@@ -372,7 +538,7 @@ namespace Fantasy.Network.TCP
             
             if (_isInnerDispose || synchronizationContext == null)
             {
-                ReturnMemoryStream(memoryStreamBuffer);
+                DisposeMemoryStream(memoryStreamBuffer);
                 return;
             }
             
@@ -382,12 +548,18 @@ namespace Fantasy.Network.TCP
 
             for (var i = 0; i < maxRetries; i++)
             {
+                if (_isInnerDispose)
+                {
+                    DisposeMemoryStream(memoryStreamBuffer);
+                    return;
+                }
+
                 if (asyncEventArgs.SocketError != SocketError.Success || asyncEventArgs.BytesTransferred == 0)
                 {
                     synchronizationContext.Post(() =>
                     {
                         _isSending = false;
-                        ReturnMemoryStream(memoryStreamBuffer);
+                        CompleteInFlightSend(memoryStreamBuffer);
                         Dispose();
                     });
                 
@@ -419,7 +591,7 @@ namespace Fantasy.Network.TCP
                         synchronizationContext.Post(() =>
                         {
                             _isSending = false;
-                            ReturnMemoryStream(memoryStreamBuffer);
+                            CompleteInFlightSend(memoryStreamBuffer);
                             Dispose();
                         });
                         return;
@@ -429,7 +601,19 @@ namespace Fantasy.Network.TCP
                 // 当前 buffer 发送完整，归还并继续下一个
                 synchronizationContext.Post(() =>
                 {
-                    ReturnMemoryStream(memoryStreamBuffer);
+                    CompleteInFlightSend(memoryStreamBuffer);
+
+                    if (IsDisposed || _isInnerDispose)
+                    {
+                        _isSending = false;
+                        return;
+                    }
+
+                    if (CheckSendBackpressure(TimeHelper.Now))
+                    {
+                        _isSending = false;
+                        return;
+                    }
                 
                     if (_sendBuffers.Count > 0)
                     {
@@ -450,7 +634,7 @@ namespace Fantasy.Network.TCP
             
             synchronizationContext.Post(() =>
             {
-                ReturnMemoryStream(memoryStreamBuffer);
+                CompleteInFlightSend(memoryStreamBuffer);
                 _isSending = false;
                 Dispose();
             });

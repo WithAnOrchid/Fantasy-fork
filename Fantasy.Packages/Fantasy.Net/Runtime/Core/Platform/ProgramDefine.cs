@@ -56,6 +56,26 @@ namespace Fantasy
         /// 会话空闲检查间隔。
         /// </summary>
         public static int SessionIdleCheckerInterval { get; internal set; }
+
+        /// <summary>
+        /// 服务端外网 TCP 连接默认待发送字节上限（4 MB）。
+        /// </summary>
+        public const long DefaultOuterTcpMaxPendingSendBytes = 4 * 1024 * 1024;
+
+        /// <summary>
+        /// 服务端外网 TCP 连接默认最老未写出包龄硬限（15 秒）。
+        /// </summary>
+        public const long DefaultOuterTcpMaxPendingSendAgeMs = 15_000;
+
+        /// <summary>
+        /// 服务端外网 TCP 连接待发送字节硬上限；小于等于 0 表示不限。
+        /// </summary>
+        public static long OuterTcpMaxPendingSendBytes { get; set; } = DefaultOuterTcpMaxPendingSendBytes;
+
+        /// <summary>
+        /// 服务端外网 TCP 连接最老未写出包龄硬限（毫秒）；小于等于 0 表示不限。
+        /// </summary>
+        public static long OuterTcpMaxPendingSendAgeMs { get; set; } = DefaultOuterTcpMaxPendingSendAgeMs;
         
         /// <summary>
         /// 内部网络通讯协议类型。
