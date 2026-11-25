@@ -74,6 +74,19 @@ namespace Fantasy.Async
         {
             return scene.TimerComponent.Net.OnceTillTimer(time, action);
         }
+
+        /// <summary>
+        /// 创建一个只执行一次的计时器，直到指定时间；若目标时间已到达或早于当前时钟，则按无延时排入下一次调度且不记录错误。
+        /// </summary>
+        /// <param name="scene"></param>
+        /// <param name="tillTime"></param>
+        /// <param name="action"></param>
+        /// <returns></returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static long OnceTillOrImmediate(Scene scene, long tillTime, Action action)
+        {
+            return scene.TimerComponent.Net.OnceTillOrImmediate(tillTime, action);
+        }
         
         /// <summary>
         /// 创建一个只执行一次的计时器，用于发布指定类型的事件。
@@ -101,6 +114,20 @@ namespace Fantasy.Async
         public static long OnceTillTimer<T>(Scene scene, long tillTime, T timerHandlerType) where T : struct
         {
             return scene.TimerComponent.Net.OnceTillTimer<T>(tillTime, timerHandlerType);
+        }
+
+        /// <summary>
+        /// 创建一个只执行一次的计时器，直到指定时间用于发布指定类型的事件；若目标时间已到达或早于当前时钟，则按无延时排入下一次调度且不记录错误。
+        /// </summary>
+        /// <param name="scene"></param>
+        /// <param name="tillTime"></param>
+        /// <param name="timerHandlerType"></param>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static long OnceTillOrImmediate<T>(Scene scene, long tillTime, T timerHandlerType) where T : struct
+        {
+            return scene.TimerComponent.Net.OnceTillOrImmediate<T>(tillTime, timerHandlerType);
         }
         
         /// <summary>

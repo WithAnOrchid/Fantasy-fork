@@ -307,6 +307,22 @@ namespace Fantasy.Timer
             AddTimer(ref timerAction);
             return timerId;
         }
+
+        /// <summary>
+        /// 创建一个只执行一次的计时器，直到指定时间；若目标时间已到达或早于当前时钟，则按无延时排入下一次调度且不记录错误。
+        /// </summary>
+        /// <param name="tillTime">计时器执行的目标时间。</param>
+        /// <param name="action">计时器回调方法。</param>
+        /// <returns>计时器的 ID。</returns>
+        public long OnceTillOrImmediate(long tillTime, Action action)
+        {
+            var now = Now();
+            var delay = tillTime <= now ? 0 : tillTime - now;
+            var timerId = GetId;
+            var timerAction = new TimerAction(timerId, TimerType.OnceTimer, now, delay, action);
+            AddTimer(ref timerAction);
+            return timerId;
+        }
         
         /// <summary>
         /// 创建一个只执行一次的计时器，用于发布指定类型的事件。
@@ -340,6 +356,23 @@ namespace Fantasy.Timer
             }
 
             return OnceTillTimer(tillTime, OnceTillTimerVoid);
+        }
+
+        /// <summary>
+        /// 创建一个只执行一次的计时器，直到指定时间用于发布指定类型的事件；若目标时间已到达或早于当前时钟，则按无延时排入下一次调度且不记录错误。
+        /// </summary>
+        /// <typeparam name="T">事件类型。</typeparam>
+        /// <param name="tillTime">计时器执行的目标时间。</param>
+        /// <param name="timerHandlerType">事件处理器类型。</param>
+        /// <returns>计时器的 ID。</returns>
+        public long OnceTillOrImmediate<T>(long tillTime, T timerHandlerType) where T : struct
+        {
+            void OnceTillOrImmediateVoid()
+            {
+                _scene.EventComponent.Publish(timerHandlerType);
+            }
+
+            return OnceTillOrImmediate(tillTime, OnceTillOrImmediateVoid);
         }
 
         /// <summary>
