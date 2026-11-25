@@ -45,14 +45,37 @@ public sealed class CSharpExporter(
         return CSharpKeywords.Contains(identifier) ? $"@{identifier}" : identifier;
     }
 
+    public static string EscapeQualifiedIdentifier(string qualifiedIdentifier)
+    {
+        if (string.IsNullOrEmpty(qualifiedIdentifier) || !qualifiedIdentifier.Contains('.'))
+        {
+            return EscapeIdentifier(qualifiedIdentifier);
+        }
+
+        var segments = qualifiedIdentifier.Split('.');
+        for (var i = 0; i < segments.Length; i++)
+        {
+            segments[i] = EscapeIdentifier(segments[i]);
+        }
+
+        return string.Join('.', segments);
+    }
+
     public static string EscapeTypeIdentifier(string typeName)
     {
-        if (string.IsNullOrEmpty(typeName) || typeName[0] == '@' || CSharpPrimitiveTypeKeywords.Contains(typeName))
+        if (string.IsNullOrEmpty(typeName))
         {
             return typeName;
         }
 
-        return EscapeIdentifier(typeName);
+        var nullableSuffix = typeName.EndsWith('?') ? "?" : string.Empty;
+        var coreType = nullableSuffix.Length > 0 ? typeName[..^1] : typeName;
+        if (string.IsNullOrEmpty(coreType) || CSharpPrimitiveTypeKeywords.Contains(coreType))
+        {
+            return typeName;
+        }
+
+        return $"{EscapeQualifiedIdentifier(coreType)}{nullableSuffix}";
     }
 
     public static string ToCamelCaseIdentifier(string name)
@@ -492,7 +515,7 @@ public sealed class CSharpExporter(
                     members.Add($"        {ignoreAttribute}");
                 }
 
-                members.Add($"        public int RouteType => {messageDefinition.CustomRouteType};");
+                members.Add($"        public int RouteType => {EscapeQualifiedIdentifier(messageDefinition.CustomRouteType)};");
             }
             
             foreach (var field in messageDefinition.Fields)
