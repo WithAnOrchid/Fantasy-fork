@@ -116,6 +116,13 @@ namespace Fantasy.Assembly
         /// </summary>
         internal static readonly ConcurrentDictionary<long, AssemblyManifest> Manifests = new ConcurrentDictionary<long, AssemblyManifest>();
 #endif
+        private static readonly object ManifestSyncLock = new object();
+
+        /// <summary>
+        /// 程序集加载生命周期任务
+        /// </summary>
+        public Task LoadTask { get; private set; } = Task.CompletedTask;
+
         /// <summary>
         /// 清理程序集清单内部资源
         /// 释放所有注册器并清空引用
@@ -124,15 +131,22 @@ namespace Fantasy.Assembly
         {
             Assembly = null;
             NetworkProtocolRegistrar = null;
+            ProtoBufDispatcherRegistrar = null;
             EventSystemRegistrar = null;
             EntitySystemRegistrar = null;
             MessageHandlerResolver = null;
             EntityTypeCollectionRegistrar = null;
+            OpCodeRegistrar = null;
+            ResponseTypeRegistrar = null;
+            CustomInterfaceRegistrar = null;
             PoolCreatorGenerator = null;
+            MemoryPackEntityGenerator = null;
 #if FANTASY_NET
             SeparateTableRegistrar = null;
             SphereEventRegistrar = null;
 #endif
+            _customInterfaces.Clear();
+            LoadTask = Task.CompletedTask;
         }
         
         #region static
@@ -147,6 +161,38 @@ namespace Fantasy.Assembly
             {
                 Log.Error(e);
             }
+        }
+
+        private static async Task ObserveLoadLifecycleTask(AssemblyManifest manifest, TaskCompletionSource<int> loadCompletion)
+        {
+            try
+            {
+                await AssemblyLifecycle.OnLoad(manifest).ConfigureAwait(false);
+                loadCompletion.TrySetResult(0);
+            }
+            catch (Exception e)
+            {
+                loadCompletion.TrySetException(e);
+                Log.Error(e);
+            }
+        }
+
+        internal static bool TryGetLoadTask(System.Reflection.Assembly assembly, out Task loadTask)
+        {
+            if (assembly != null)
+            {
+                foreach (var (_, manifest) in Manifests)
+                {
+                    if (ReferenceEquals(manifest.Assembly, assembly))
+                    {
+                        loadTask = manifest.LoadTask;
+                        return true;
+                    }
+                }
+            }
+
+            loadTask = Task.CompletedTask;
+            return false;
         }
 
 #if FANTASY_NET
@@ -211,6 +257,9 @@ namespace Fantasy.Assembly
                 MemoryPackEntityGenerator = memoryPackEntityGenerator
             };
             
+            var loadCompletion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            manifest.LoadTask = loadCompletion.Task;
+
             // 设置SceneType字典
             var sceneTypeDictionary = fantasyConfigRegistrar.GetSceneTypeDictionary();
             if (sceneTypeDictionary.Any())
@@ -219,8 +268,8 @@ namespace Fantasy.Assembly
             }
             
             customInterfaceRegistrar.Register(manifest._customInterfaces);
-            Manifests[assemblyManifestId] = manifest;
-            _ = ObserveLifecycleTask(AssemblyLifecycle.OnLoad(manifest));
+            RegisterManifest(assemblyManifestId, manifest);
+            _ = ObserveLoadLifecycleTask(manifest, loadCompletion);
         }
 #endif
 #if FANTASY_UNITY
@@ -276,11 +325,47 @@ namespace Fantasy.Assembly
                 ProtoBufDispatcherRegistrar = protoBufDispatcherRegistrar,
                 MemoryPackEntityGenerator = memoryPackEntityGenerator
             };
-            Manifests[assemblyManifestId] = manifest;
+            var loadCompletion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            manifest.LoadTask = loadCompletion.Task;
             customInterfaceRegistrar.Register(manifest._customInterfaces);
-            _ = ObserveLifecycleTask(AssemblyLifecycle.OnLoad(manifest));
+            RegisterManifest(assemblyManifestId, manifest);
+            _ = ObserveLoadLifecycleTask(manifest, loadCompletion);
         }
 #endif
+        private static void RegisterManifest(long assemblyManifestId, AssemblyManifest manifest)
+        {
+            AssemblyManifest existing;
+            bool hasExisting;
+            lock (ManifestSyncLock)
+            {
+                hasExisting = Manifests.TryGetValue(assemblyManifestId, out existing) && !ReferenceEquals(existing, manifest);
+                Manifests[assemblyManifestId] = manifest;
+            }
+
+            if (hasExisting)
+            {
+                if (existing.LoadTask.IsCompleted)
+                {
+                    existing.CustomInterfaceRegistrar?.UnRegister(existing._customInterfaces);
+                    existing.Clear();
+                }
+                else
+                {
+                    _ = existing.LoadTask.ContinueWith(
+                        static (_, state) =>
+                        {
+                            var replaced = (AssemblyManifest)state;
+                            replaced.CustomInterfaceRegistrar?.UnRegister(replaced._customInterfaces);
+                            replaced.Clear();
+                        },
+                        existing,
+                        System.Threading.CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+            }
+        }
+
         /// <summary>
         /// 取消注册指定程序集的清单
         /// </summary>
@@ -288,35 +373,26 @@ namespace Fantasy.Assembly
         /// <param name="assembly">可选的程序集实例。指定时仅注销属于该程序集实例的清单</param>
         public static void Unregister(long assemblyManifestId, System.Reflection.Assembly assembly = null)
         {
-#if FANTASY_WEBGL
-            if (!Manifests.TryGetValue(assemblyManifestId, out var manifest) ||
-                (assembly != null && !ReferenceEquals(manifest.Assembly, assembly)))
-            {
-                return;
-            }
-            Manifests.Remove(assemblyManifestId);
-#else
             AssemblyManifest manifest;
-            if (assembly == null)
-            {
-                if (!Manifests.TryRemove(assemblyManifestId, out manifest))
-                {
-                    return;
-                }
-            }
-            else
+            lock (ManifestSyncLock)
             {
                 if (!Manifests.TryGetValue(assemblyManifestId, out manifest) ||
-                    !ReferenceEquals(manifest.Assembly, assembly) ||
-                    !((ICollection<KeyValuePair<long, AssemblyManifest>>)Manifests)
-                        .Remove(new KeyValuePair<long, AssemblyManifest>(assemblyManifestId, manifest)))
+                    (assembly != null && !ReferenceEquals(manifest.Assembly, assembly)))
                 {
                     return;
                 }
-            }
+#if FANTASY_WEBGL
+                Manifests.Remove(assemblyManifestId);
+#else
+                if (!Manifests.TryRemove(assemblyManifestId, out _))
+                {
+                    return;
+                }
 #endif
+            }
+
+            manifest.CustomInterfaceRegistrar?.UnRegister(manifest._customInterfaces);
             _ = ObserveLifecycleTask(AssemblyLifecycle.OnUnLoad(manifest));
-            manifest.CustomInterfaceRegistrar.UnRegister(manifest._customInterfaces);
         }
 
         /// <summary>

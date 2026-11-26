@@ -141,7 +141,10 @@ namespace Fantasy.Network.HTTP
             // 添加所有程序集的控制器部件
             foreach (var assemblyManifest in AssemblyManifest.GetAssemblyManifest)
             {
-                mvcBuilder.AddApplicationPart(assemblyManifest.Assembly);
+                if (assemblyManifest.Assembly != null && !assemblyManifest.Assembly.IsCollectible)
+                {
+                    mvcBuilder.AddApplicationPart(assemblyManifest.Assembly);
+                }
             }
             
             var app = builder.Build();

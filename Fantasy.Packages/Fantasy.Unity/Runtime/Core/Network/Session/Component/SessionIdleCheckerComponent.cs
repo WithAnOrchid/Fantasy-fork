@@ -2,6 +2,7 @@
 using Fantasy.Entitas;
 using Fantasy.Entitas.Interface;
 using Fantasy.Helper;
+using Fantasy.Network.TCP;
 using Fantasy.Platform.Net;
 using Fantasy.Timer;
 
@@ -103,6 +104,12 @@ public class SessionIdleCheckerComponent : Entity
         }
 
         var timeNow = TimeHelper.Now;
+
+        if (_session.Channel is TCPServerNetworkChannel tcpChannel &&
+            tcpChannel.CheckSendBackpressure(timeNow))
+        {
+            return;
+        }
         
         if (timeNow - _session.LastReceiveTime < _timeOut)
         {

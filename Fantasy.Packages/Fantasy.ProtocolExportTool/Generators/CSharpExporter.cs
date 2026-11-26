@@ -17,6 +17,85 @@ public sealed class CSharpExporter(
     ProtocolExportType protocolExportType)
     : AProtocolExporter(protocolDirectory, clientDirectory, serverDirectory, opCodeCache, protocolExportType)
 {
+    private static readonly HashSet<string> CSharpKeywords = new(StringComparer.Ordinal)
+    {
+        "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked",
+        "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else", "enum",
+        "event", "explicit", "extern", "false", "finally", "fixed", "float", "for", "foreach", "goto",
+        "if", "implicit", "in", "int", "interface", "internal", "is", "lock", "long", "namespace",
+        "new", "null", "object", "operator", "out", "override", "params", "private", "protected", "public",
+        "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof", "stackalloc", "static", "string",
+        "struct", "switch", "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked",
+        "unsafe", "ushort", "using", "virtual", "void", "volatile", "while"
+    };
+
+    private static readonly HashSet<string> CSharpPrimitiveTypeKeywords = new(StringComparer.Ordinal)
+    {
+        "bool", "byte", "char", "decimal", "double", "float", "int", "long",
+        "object", "sbyte", "short", "string", "uint", "ulong", "ushort"
+    };
+
+    public static string EscapeIdentifier(string identifier)
+    {
+        if (string.IsNullOrEmpty(identifier) || identifier[0] == '@')
+        {
+            return identifier;
+        }
+
+        return CSharpKeywords.Contains(identifier) ? $"@{identifier}" : identifier;
+    }
+
+    public static string EscapeQualifiedIdentifier(string qualifiedIdentifier)
+    {
+        if (string.IsNullOrEmpty(qualifiedIdentifier) || !qualifiedIdentifier.Contains('.'))
+        {
+            return EscapeIdentifier(qualifiedIdentifier);
+        }
+
+        var segments = qualifiedIdentifier.Split('.');
+        for (var i = 0; i < segments.Length; i++)
+        {
+            segments[i] = EscapeIdentifier(segments[i]);
+        }
+
+        return string.Join('.', segments);
+    }
+
+    public static string EscapeTypeIdentifier(string typeName)
+    {
+        if (string.IsNullOrEmpty(typeName))
+        {
+            return typeName;
+        }
+
+        var nullableSuffix = typeName.EndsWith('?') ? "?" : string.Empty;
+        var coreType = nullableSuffix.Length > 0 ? typeName[..^1] : typeName;
+        if (string.IsNullOrEmpty(coreType) || CSharpPrimitiveTypeKeywords.Contains(coreType))
+        {
+            return typeName;
+        }
+
+        return $"{EscapeQualifiedIdentifier(coreType)}{nullableSuffix}";
+    }
+
+    public static string ToCamelCaseIdentifier(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return name;
+        }
+
+        var raw = name[0] == '@' ? name[1..] : name;
+        if (raw.Length == 0)
+        {
+            return name;
+        }
+
+        var camelCase = raw.Length == 1
+            ? char.ToLowerInvariant(raw[0]).ToString()
+            : $"{char.ToLowerInvariant(raw[0])}{raw[1..]}";
+        return EscapeIdentifier(camelCase);
+    }
     protected override string GenerateRouteTypes(IReadOnlyDictionary<string, int> routeTypes)
     {
         if (routeTypes.Count == 0)
@@ -32,11 +111,11 @@ public sealed class CSharpExporter(
                 var comment = x.Key.EndsWith("Route")
                     ? x.Key.Substring(0, x.Key.Length - "Route".Length)
                     : x.Key;
-                return $"        public const int {x.Key} = {x.Value}; // {comment}";
+                return $"        public const int {EscapeIdentifier(x.Key)} = {x.Value}; // {comment}";
             }));
         
         var enumerable = string.Join(Environment.NewLine, 
-            routeTypeEnumerable.Select(x => $"                yield return {x.Key};"));
+            routeTypeEnumerable.Select(x => $"                yield return {EscapeIdentifier(x.Key)};"));
 
         return $$"""
                  using System.Collections.Generic;
@@ -79,11 +158,11 @@ public sealed class CSharpExporter(
                     : x.Key.EndsWith("Type")
                         ? x.Key.Substring(0, x.Key.Length - "Type".Length)
                         : x.Key;
-                return $"        public const int {x.Key} = {x.Value}; // {comment}";
+                return $"        public const int {EscapeIdentifier(x.Key)} = {x.Value}; // {comment}";
             }));
 
         var enumerable = string.Join(Environment.NewLine, 
-            roamingTypeEnumerable.Select(x => $"                yield return {x.Key};"));
+            roamingTypeEnumerable.Select(x => $"                yield return {EscapeIdentifier(x.Key)};"));
 
         return $$"""
                  using System.Collections.Generic;
@@ -126,7 +205,7 @@ public sealed class CSharpExporter(
                      public static partial class OuterOpcode
                      {
                  {{string.Join(Environment.NewLine, opcodeInfos
-                     .Select(x => $"        public const uint {x.Name} = {x.Code};"))}}
+                     .Select(x => $"        public const uint {EscapeIdentifier(x.Name)} = {x.Code};"))}}
                      }
                  }
                  """;
@@ -149,7 +228,7 @@ public sealed class CSharpExporter(
                      public static partial class InnerOpcode
                      {
                  {{string.Join(Environment.NewLine, opcodeInfos
-                     .Select(x => $"        public const uint {x.Name} = {x.Code};"))}}
+                     .Select(x => $"        public const uint {EscapeIdentifier(x.Name)} = {x.Code};"))}}
                      }
                  }
                  """;
@@ -170,6 +249,7 @@ public sealed class CSharpExporter(
                                                                 #pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
                                                                 #pragma warning disable CS8618
                                                                 #pragma warning disable CS8601 // Possible null reference assignment in generated message copies.
+                                                                #pragma warning disable CS8602 // Dereference of a possibly null reference in generated message copies.
                                                                 // ReSharper disable InconsistentNaming
                                                                 // ReSharper disable CollectionNeverUpdated.Global
                                                                 // ReSharper disable RedundantTypeArgumentsOfMethod
@@ -217,6 +297,7 @@ public sealed class CSharpExporter(
                                                                 #pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
                                                                 #pragma warning disable CS8618
                                                                 #pragma warning disable CS8601 // Possible null reference assignment in generated message copies.
+                                                                #pragma warning disable CS8602 // Dereference of a possibly null reference in generated message copies.
                                                                 namespace Fantasy
                                                                 {
                                                                 {{GenerateMessages("InnerOpcode", messageDefinitions)}}
@@ -240,6 +321,9 @@ public sealed class CSharpExporter(
                 continue;
             }
 
+            var escapedMessageName = EscapeIdentifier(messageDefinitionName);
+            var escapedResponseType = EscapeIdentifier(messageDefinition.ResponseType);
+
             switch (messageDefinition.MessageType)
                 {
                     case MessageType.Message:
@@ -247,7 +331,7 @@ public sealed class CSharpExporter(
                     case MessageType.RouteTypeMessage:
                         {
                             helper.AppendLine("\t\t[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                            helper.AppendLine($"\t\tpublic static void {messageDefinitionName}(this Session session, {messageDefinitionName} {messageDefinitionName}_message)");
+                            helper.AppendLine($"\t\tpublic static void {escapedMessageName}(this Session session, {escapedMessageName} {messageDefinitionName}_message)");
                             helper.AppendLine("\t\t{");
                             helper.AppendLine($"\t\t\tsession.Send({messageDefinitionName}_message);");
                             helper.AppendLine("\t\t}");
@@ -257,17 +341,17 @@ public sealed class CSharpExporter(
                                 var parameters = string.Join(", ",
                                     messageDefinition.Fields
                                     .Where(f => f.CustomTextLine == null) // 跳过自定义文本行
-                                    .Select(f => $"{ConvertType(f)} {char.ToLower(f.Name[0])}{f.Name[1..]}"));
+                                    .Select(f => $"{ConvertType(f)} {ToCamelCaseIdentifier(f.Name)}"));
                                 helper.AppendLine("\t\t[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                                helper.AppendLine($"\t\tpublic static void {messageDefinitionName}(this Session session, {parameters})");
+                                helper.AppendLine($"\t\tpublic static void {escapedMessageName}(this Session session, {parameters})");
                                 helper.AppendLine("\t\t{");
-                                helper.AppendLine($"\t\t\tusing var {messageDefinitionName}_message = Fantasy.{messageDefinitionName}.Create();");
+                                helper.AppendLine($"\t\t\tusing var {messageDefinitionName}_message = Fantasy.{escapedMessageName}.Create();");
 
                                 foreach (var field in messageDefinition.Fields)
                                 {
                                     if (field.CustomTextLine != null) // 跳过自定义文本行
                                         continue;
-                                    helper.AppendLine($"\t\t\t{messageDefinitionName}_message.{field.Name} = {char.ToLower(field.Name[0])}{field.Name[1..]};");
+                                    helper.AppendLine($"\t\t\t{messageDefinitionName}_message.{EscapeIdentifier(field.Name)} = {ToCamelCaseIdentifier(field.Name)};");
                                 }
 
                                 helper.AppendLine($"\t\t\tsession.Send({messageDefinitionName}_message);");
@@ -276,9 +360,9 @@ public sealed class CSharpExporter(
                             else
                             {
                                 helper.AppendLine("\t\t[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                                helper.AppendLine($"\t\tpublic static void {messageDefinitionName}(this Session session)");
+                                helper.AppendLine($"\t\tpublic static void {escapedMessageName}(this Session session)");
                                 helper.AppendLine("\t\t{");
-                                helper.AppendLine($"\t\t\tusing var message = Fantasy.{messageDefinitionName}.Create();");
+                                helper.AppendLine($"\t\t\tusing var message = Fantasy.{escapedMessageName}.Create();");
                                 helper.AppendLine("\t\t\tsession.Send(message);");
                                 helper.AppendLine("\t\t}");
                             }
@@ -290,9 +374,9 @@ public sealed class CSharpExporter(
                     case MessageType.RoamingRequest:
                         {
                             helper.AppendLine($"\t\t[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                            helper.AppendLine($"\t\tpublic static async FTask<{messageDefinition.ResponseType}> {messageDefinitionName}(this Session session, {messageDefinitionName} {messageDefinitionName}_request)");
+                            helper.AppendLine($"\t\tpublic static async FTask<{escapedResponseType}> {escapedMessageName}(this Session session, {escapedMessageName} {messageDefinitionName}_request)");
                             helper.AppendLine("\t\t{");
-                            helper.AppendLine($"\t\t\treturn ({messageDefinition.ResponseType})await session.Call({messageDefinitionName}_request);");
+                            helper.AppendLine($"\t\t\treturn ({escapedResponseType})await session.Call({messageDefinitionName}_request);");
                             helper.AppendLine("\t\t}");
 
                             if (messageDefinition.Fields.Count > 0)
@@ -301,27 +385,27 @@ public sealed class CSharpExporter(
                                     messageDefinition.Fields
                                     .Where(f => f.CustomTextLine == null) // 跳过自定义文本行
                                     .Select(f =>
-                                        $"{ConvertType(f)} {char.ToLower(f.Name[0])}{f.Name[1..]}"));
+                                        $"{ConvertType(f)} {ToCamelCaseIdentifier(f.Name)}"));
                                 helper.AppendLine($"\t\t[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                                helper.AppendLine($"\t\tpublic static async FTask<{messageDefinition.ResponseType}> {messageDefinitionName}(this Session session, {parameters})");
+                                helper.AppendLine($"\t\tpublic static async FTask<{escapedResponseType}> {escapedMessageName}(this Session session, {parameters})");
                                 helper.AppendLine("\t\t{");
-                                helper.AppendLine($"\t\t\tusing var {messageDefinitionName}_request = Fantasy.{messageDefinitionName}.Create();");
+                                helper.AppendLine($"\t\t\tusing var {messageDefinitionName}_request = Fantasy.{escapedMessageName}.Create();");
                                 foreach (var field in messageDefinition.Fields)
                                 {
                                     if (field.CustomTextLine != null) // 跳过自定义文本行
                                         continue;
-                                    helper.AppendLine($"\t\t\t{messageDefinitionName}_request.{field.Name} = {char.ToLower(field.Name[0])}{field.Name[1..]};");
+                                    helper.AppendLine($"\t\t\t{messageDefinitionName}_request.{EscapeIdentifier(field.Name)} = {ToCamelCaseIdentifier(field.Name)};");
                                 }
-                                helper.AppendLine($"\t\t\treturn ({messageDefinition.ResponseType})await session.Call({messageDefinitionName}_request);");
+                                helper.AppendLine($"\t\t\treturn ({escapedResponseType})await session.Call({messageDefinitionName}_request);");
                                 helper.AppendLine("\t\t}");
                             }
                             else
                             {
                                 helper.AppendLine($"\t\t[MethodImpl(MethodImplOptions.AggressiveInlining)]");
-                                helper.AppendLine($"\t\tpublic static async FTask<{messageDefinition.ResponseType}> {messageDefinitionName}(this Session session)");
+                                helper.AppendLine($"\t\tpublic static async FTask<{escapedResponseType}> {escapedMessageName}(this Session session)");
                                 helper.AppendLine("\t\t{");
-                                helper.AppendLine($"\t\t\tusing var {messageDefinitionName}_request = Fantasy.{messageDefinitionName}.Create();");
-                                helper.AppendLine($"\t\t\treturn ({messageDefinition.ResponseType})await session.Call({messageDefinitionName}_request);");
+                                helper.AppendLine($"\t\t\tusing var {messageDefinitionName}_request = Fantasy.{escapedMessageName}.Create();");
+                                helper.AppendLine($"\t\t\treturn ({escapedResponseType})await session.Call({messageDefinitionName}_request);");
                                 helper.AppendLine("\t\t}");
                             }
                             break;
@@ -394,6 +478,9 @@ public sealed class CSharpExporter(
 
         foreach (var (messageDefinitionName, messageDefinition) in messageDefinitions)
         {
+            var escapedMessageName = EscapeIdentifier(messageDefinitionName);
+            var escapedMessageClassName = EscapeIdentifier(messageDefinition.Name);
+            var escapedResponseType = EscapeIdentifier(messageDefinition.ResponseType);
             var disposeCode = new StringBuilder();
             var members = new List<string>();
             var memberAttribute = messageDefinition.Protocol.MemberAttribute;
@@ -402,13 +489,13 @@ public sealed class CSharpExporter(
             
             if (messageDefinition.HasOpCode)
             {
-                members.Add($"        public uint OpCode() {{ return {opcodeName}.{messageDefinitionName}; }} ");
+                members.Add($"        public uint OpCode() {{ return {opcodeName}.{escapedMessageName}; }} ");
             }
             
             if (IsRequestType(messageDefinition.MessageType))
             {
                 members.Add($"        {ignoreAttribute}");
-                members.Add($"        public {messageDefinition.ResponseType} ResponseType {{ get; set; }}");
+                members.Add($"        public {escapedResponseType} ResponseType {{ get; set; }}");
             }
             
             if (IsResponseType(messageDefinition.MessageType))
@@ -432,7 +519,7 @@ public sealed class CSharpExporter(
                     members.Add($"        {ignoreAttribute}");
                 }
 
-                members.Add($"        public int RouteType => {messageDefinition.CustomRouteType};");
+                members.Add($"        public int RouteType => {EscapeQualifiedIdentifier(messageDefinition.CustomRouteType)};");
             }
             
             foreach (var field in messageDefinition.Fields)
@@ -443,6 +530,7 @@ public sealed class CSharpExporter(
                     continue;
                 }
 
+                var fieldName = EscapeIdentifier(field.Name);
                 string? disposeStatement;
                 switch (field.CollectionType)
                 {
@@ -450,36 +538,36 @@ public sealed class CSharpExporter(
                     {
                         if (messageDefinitions.ContainsKey(field.Type))
                         {
-                            disposeStatement = $"foreach (var __t in {field.Name}) __t.Dispose();\n            {field.Name}.Clear();";
+                            disposeStatement = $"foreach (var __t in {fieldName}) __t.Dispose();\n            {fieldName}.Clear();";
                         }
                         else
                         {
-                            disposeStatement = $"{field.Name}.Clear();";
+                            disposeStatement = $"{fieldName}.Clear();";
                         }
                         break;
                     }
                     case FieldCollectionType.Map:
                     {
                         disposeStatement = messageDefinitions.ContainsKey(field.MapValueType) ? 
-                            $"foreach (var __t in {field.Name}.Values) __t.Dispose();\n            {field.Name}.Clear();" : 
-                            $"{field.Name}.Clear();";
+                            $"foreach (var __t in {fieldName}.Values) __t.Dispose();\n            {fieldName}.Clear();" : 
+                            $"{fieldName}.Clear();";
                         break;
                     }
                     case FieldCollectionType.RepeatedList:
                     case FieldCollectionType.RepeatedArray:
                     {
-                        disposeStatement = $"{field.Name} = null;";
+                        disposeStatement = $"{fieldName} = null;";
                         break;
                     }
                     default:
                     {
                         disposeStatement = messageDefinitions.ContainsKey(field.Type) ? $$"""
-                                  if ({{field.Name}} != null)
+                                  if ({{fieldName}} != null)
                                               {
-                                                  {{field.Name}}.Dispose();
-                                                  {{field.Name}} = null;
+                                                  {{fieldName}}.Dispose();
+                                                  {{fieldName}} = null;
                                               }
-                                  """ : $"{field.Name} = default;";
+                                  """ : $"{fieldName} = default;";
                         break;
                     }
                 }
@@ -503,10 +591,10 @@ public sealed class CSharpExporter(
                 
                 var fieldType = ConvertType(field);
                 var initializer = GetInitializer(field);
-                members.Add($"        public {fieldType} {field.Name} {{ get; set; }}{initializer}");
+                members.Add($"        public {fieldType} {fieldName} {{ get; set; }}{initializer}");
             }
             
-            disposeCode.Append($"            MessageObjectPool<{messageDefinitionName}>.Return(this);");
+            disposeCode.Append($"            MessageObjectPool<{escapedMessageName}>.Return(this);");
 
             var copyCode = new StringBuilder();
             if (IsResponseType(messageDefinition.MessageType) && !hasErrorCodeField)
@@ -521,7 +609,7 @@ public sealed class CSharpExporter(
                     continue;
                 }
 
-                var fieldName = field.Name;
+                var fieldName = EscapeIdentifier(field.Name);
                 switch (field.CollectionType)
                 {
                     case FieldCollectionType.Repeated:
@@ -600,19 +688,19 @@ public sealed class CSharpExporter(
             
             if (string.IsNullOrEmpty(messageDefinition.InterfaceType))
             {
-                builder.AppendLine($"    public partial class {messageDefinition.Name} : AMessage, IDisposable");
+                builder.AppendLine($"    public partial class {escapedMessageClassName} : AMessage, IDisposable");
             }
             else
             {
-                builder.AppendLine($"    public partial class {messageDefinition.Name} : AMessage, {messageDefinition.InterfaceType}");
+                builder.AppendLine($"    public partial class {escapedMessageClassName} : AMessage, {messageDefinition.InterfaceType}");
             }
 
-            var messageName = $"{char.ToLower(messageDefinitionName[0])}{messageDefinitionName[1..]}";
+            var messageName = ToCamelCaseIdentifier(messageDefinitionName);
             builder.AppendLine($$"""
                                        {
-                                           public static {{messageDefinitionName}} Create(bool autoReturn = true)
+                                           public static {{escapedMessageName}} Create(bool autoReturn = true)
                                            {
-                                               var {{messageName}} = MessageObjectPool<{{messageDefinitionName}}>.Rent();
+                                               var {{messageName}} = MessageObjectPool<{{escapedMessageName}}>.Rent();
                                                {{messageName}}.AutoReturn = autoReturn;
                                                
                                                if (!autoReturn)
@@ -643,7 +731,7 @@ public sealed class CSharpExporter(
                                    {{disposeCode}}
                                            }
 
-                                           public void CopyTo(ref {{messageDefinitionName}} other)
+                                           public void CopyTo(ref {{escapedMessageName}} other)
                                            {
                                                if (other == null)
                                                {
@@ -652,7 +740,7 @@ public sealed class CSharpExporter(
                                    {{copyCode}}
                                            }
 
-                                           public {{messageDefinitionName}} DeepCopy()
+                                           public {{escapedMessageName}} DeepCopy()
                                            {
                                                var other = Create(false);
                                                CopyTo(ref other);
@@ -786,8 +874,8 @@ public sealed class CSharpExporter(
             }
             default:
             {
-                // 无法识别的类型，默认就按照定义的类型来输出
-                return type;
+                // 无法识别的类型，默认就按照定义的类型来输出（若为非基元类型 C# 关键字则转义）
+                return EscapeTypeIdentifier(type);
             }
         }
     }
@@ -826,7 +914,7 @@ public sealed class CSharpExporter(
         }
 
         // 生成枚举声明
-        builder.AppendLine($"\tpublic enum {enumDefinition.Name}");
+        builder.AppendLine($"\tpublic enum {EscapeIdentifier(enumDefinition.Name)}");
         builder.AppendLine("\t{");
 
         // 生成枚举值
@@ -847,7 +935,7 @@ public sealed class CSharpExporter(
 
             // 生成枚举值
             var comma = i < enumDefinition.Values.Count - 1 ? "," : string.Empty;
-            builder.AppendLine($"\t\t{value.Name} = {value.Value}{comma}");
+            builder.AppendLine($"\t\t{EscapeIdentifier(value.Name)} = {value.Value}{comma}");
         }
 
         builder.AppendLine("\t}");

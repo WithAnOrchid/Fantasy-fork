@@ -303,7 +303,17 @@ public sealed partial class Terminus : Entity
     /// <returns>0 表示成功；其他值为传送或路由错误码。</returns>
     public async FTask<uint> StartTransfer(long targetSceneAddress)
     {
-        var currentSceneAddress = Scene.Address;
+        var sourceScene = Scene;
+        var forwardSceneAddress = ForwardSceneAddress;
+        if (IsDisposed || IsDisposeTerminus || sourceScene == null || sourceScene.IsDisposed || forwardSceneAddress == 0)
+        {
+            return InnerErrorCode.ErrRoamingDisposed;
+        }
+
+        var currentSceneAddress = sourceScene.Address;
+        var roamingId = Id;
+        var roamingType = RoamingType;
+        var originalTerminusId = TerminusId;
 
         if (targetSceneAddress == currentSceneAddress)
         {
@@ -323,6 +333,12 @@ public sealed partial class Terminus : Entity
                 return lockErrorCode;
             }
             isLocked = true;
+            if (IsDisposed || IsDisposeTerminus || Scene == null)
+            {
+                await TryUnLockOnAbortAsync(sourceScene, forwardSceneAddress, roamingId, roamingType, originalTerminusId, currentSceneAddress);
+                isLocked = false;
+                return InnerErrorCode.ErrRoamingDisposed;
+            }
 
             // 业务实体存在时由实体承载传送事件，否则由 Terminus 自身承载。
             if (this.TerminusEntity == null)
@@ -334,6 +350,13 @@ public sealed partial class Terminus : Entity
                 await Scene.EntityComponent.TransferOut(TerminusEntity);
             }
 
+            if (IsDisposed || IsDisposeTerminus || Scene == null)
+            {
+                await TryUnLockOnAbortAsync(sourceScene, forwardSceneAddress, roamingId, roamingType, originalTerminusId, currentSceneAddress);
+                isLocked = false;
+                return InnerErrorCode.ErrRoamingDisposed;
+            }
+
             // 序列化后的 Terminus 在目标 Scene 注册并提交新的路由地址。
             using var response = (I_TransferTerminusResponse)await Scene.NetworkMessagingComponent.Call(
                 targetSceneAddress,
@@ -343,13 +366,19 @@ public sealed partial class Terminus : Entity
                 });
             if (response.ErrorCode != 0)
             {
-                // 目标端失败时保留源端实体，并恢复旧路由继续服务。
-                await UnLock();
+                // 目标端失败时保留源端实体并恢复旧路由。
+                var unlockTerminusId = !IsDisposed && !IsDisposeTerminus && TerminusId != 0 ? TerminusId : originalTerminusId;
+                await TryUnLockOnAbortAsync(sourceScene, forwardSceneAddress, roamingId, roamingType, unlockTerminusId, currentSceneAddress);
                 isLocked = false;
                 return response.ErrorCode;
             }
-            // 目标端已接管路由，最后清理源 Scene 中的副本。
-            await Scene.TerminusComponent.RemoveTerminusAsync(DisposeTerminusType.Transfer, Id, true);
+            // 目标端已接管并解锁迁移锁，此后异常路径不得重复解锁。
+            isLocked = false;
+            // 若源端仍在则清理源 Scene 中的副本。
+            if (!IsDisposed && !IsDisposeTerminus && Scene != null)
+            {
+                await Scene.TerminusComponent.RemoveTerminusAsync(DisposeTerminusType.Transfer, Id, true);
+            }
         }
         catch (Exception e)
         {
@@ -358,7 +387,8 @@ public sealed partial class Terminus : Entity
             // 异常路径也必须释放远端迁移锁，否则该 roamingType 的后续请求会永久阻塞。
             if (isLocked)
             {
-                await UnLock();
+                var unlockTerminusId = !IsDisposed && !IsDisposeTerminus && TerminusId != 0 ? TerminusId : originalTerminusId;
+                await TryUnLockOnAbortAsync(sourceScene, forwardSceneAddress, roamingId, roamingType, unlockTerminusId, currentSceneAddress);
             }
 
             return InnerErrorCode.ErrTerminusStartTransfer;
@@ -422,6 +452,11 @@ public sealed partial class Terminus : Entity
     /// <returns>源端返回的错误码，0 表示锁定成功。</returns>
     private async FTask<uint> Lock()
     {
+        if (IsDisposed || IsDisposeTerminus || Scene == null || Scene.IsDisposed || Scene.NetworkMessagingComponent == null || ForwardSceneAddress == 0)
+        {
+            return InnerErrorCode.ErrRoamingDisposed;
+        }
+
         using var response = await Scene.NetworkMessagingComponent.Call(ForwardSceneAddress,
             new I_LockTerminusIdRequest()
             {
@@ -435,17 +470,52 @@ public sealed partial class Terminus : Entity
     /// 向源端提交当前 TerminusId 和 Scene 地址，并解除路由锁。
     /// </summary>
     /// <returns>源端返回的错误码，0 表示提交成功。</returns>
-    private async FTask<uint> UnLock()
+    private FTask<uint> UnLock()
     {
-        using var response = await Scene.NetworkMessagingComponent.Call(ForwardSceneAddress,
+        var scene = Scene;
+        return UnLock(scene, ForwardSceneAddress, Id, RoamingType, TerminusId, scene?.Address ?? 0);
+    }
+
+    private static async FTask<uint> UnLock(
+        Scene? scene,
+        long forwardSceneAddress,
+        long roamingId,
+        int roamingType,
+        long terminusId,
+        long targetSceneAddress)
+    {
+        if (scene == null || scene.IsDisposed || scene.NetworkMessagingComponent == null || forwardSceneAddress == 0)
+        {
+            return InnerErrorCode.ErrRoamingDisposed;
+        }
+
+        using var response = await scene.NetworkMessagingComponent.Call(forwardSceneAddress,
             new I_UnLockTerminusIdRequest()
             {
-                RoamingId = Id,
-                RoamingType = RoamingType,
-                TerminusId = TerminusId,
-                TargetSceneAddress = Scene.Address
+                RoamingId = roamingId,
+                RoamingType = roamingType,
+                TerminusId = terminusId,
+                TargetSceneAddress = targetSceneAddress
             });
         return response.ErrorCode;
+    }
+
+    private static async FTask TryUnLockOnAbortAsync(
+        Scene? sourceScene,
+        long forwardSceneAddress,
+        long roamingId,
+        int roamingType,
+        long terminusId,
+        long currentSceneAddress)
+    {
+        try
+        {
+            await UnLock(sourceScene, forwardSceneAddress, roamingId, roamingType, terminusId, currentSceneAddress);
+        }
+        catch (Exception unlockException)
+        {
+            Log.Error(unlockException);
+        }
     }
 
     #endregion
