@@ -143,6 +143,14 @@ namespace Fantasy.Platform.Net
 
 			return list;
 		}
+
+		/// <summary>
+		/// 获得SceneConfig（兼容 uint 类型的 World.Id）
+		/// </summary>
+		public List<SceneConfig> GetSceneBySceneType(uint world, int sceneType)
+		{
+			return GetSceneBySceneType(unchecked((int)world), sceneType);
+		}
 	}
 
 	/// <summary>
