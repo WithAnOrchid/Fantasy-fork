@@ -609,7 +609,7 @@ public sealed class CSharpExporter(
                     continue;
                 }
 
-                var fieldName = field.Name;
+                var fieldName = EscapeIdentifier(field.Name);
                 switch (field.CollectionType)
                 {
                     case FieldCollectionType.Repeated:
@@ -731,7 +731,7 @@ public sealed class CSharpExporter(
                                    {{disposeCode}}
                                            }
 
-                                           public void CopyTo(ref {{messageDefinitionName}} other)
+                                           public void CopyTo(ref {{escapedMessageName}} other)
                                            {
                                                if (other == null)
                                                {
@@ -740,7 +740,7 @@ public sealed class CSharpExporter(
                                    {{copyCode}}
                                            }
 
-                                           public {{messageDefinitionName}} DeepCopy()
+                                           public {{escapedMessageName}} DeepCopy()
                                            {
                                                var other = Create(false);
                                                CopyTo(ref other);
